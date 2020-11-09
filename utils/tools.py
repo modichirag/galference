@@ -270,27 +270,27 @@ def shear(mesh, k):
 #################################################################################
 
 
-def power(f1, f2=None, boxsize=1.0, k = None, symmetric=True):
+def power(f1, f2=None, boxsize=1.0, k = None, symmetric=True, demean=True):
     """
     Calculate power spectrum given density field in real space & boxsize.
     Divide by mean, so mean should be non-zero
     """
-    if abs(f1.mean()) < 1e-3:
+    if demean and abs(f1.mean()) < 1e-3:
         print('Add 1 to get nonzero mean of %0.3e'%f1.mean())
         f1 = f1*1 + 1
-    if f2 is not None:
+    if demean and f2 is not None:
         if abs(f2.mean()) < 1e-3:
             print('Add 1 to get nonzero mean of %0.3e'%f2.mean())
             f2 =f2*1 + 1
     
     if symmetric: c1 = numpy.fft.rfftn(f1)
     else: c1 = numpy.fft.fftn(f1)
-    c1 /= c1[0, 0, 0].real
+    if demean : c1 /= c1[0, 0, 0].real
     c1[0, 0, 0] = 0
     if f2 is not None:
         if symmetric: c2 = numpy.fft.rfftn(f2)
         else: c2 = numpy.fft.fftn(f2)
-        c2 /= c2[0, 0, 0].real
+        if demean : c2 /= c2[0, 0, 0].real
         c2[0, 0, 0] = 0
     else:
         c2 = c1
