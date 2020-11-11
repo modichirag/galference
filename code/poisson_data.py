@@ -106,13 +106,15 @@ def main(_):
     try : os.makedirs('../data/poisson_N%03d'%nc)
     except Exception as e : print(e)
     
-    np.save('../data/poisson_N%03d/init'%nc, a)
+    np.save('../data/poisson_N%03d/ic'%nc, a)
     np.save('../data/poisson_N%03d/final'%nc, b)
     np.save('../data/poisson_N%03d/psample_%0.2f'%(nc, plambda), c)
     
     k, pi = tools.power(a[0], boxsize=bs)
     k, pf = tools.power(b[0], boxsize=bs)
     k, ph = tools.power(c[0], boxsize=bs)
+    k, pxf = tools.power(b[0], f2=c[0], boxsize=bs)
+    k, pxi = tools.power(a[0], f2=c[0], boxsize=bs)
     plt.plot(k, pi, label='IC')
     plt.plot(k, pf, label='Final')
     plt.plot(k, ph, label='Halo')
@@ -121,6 +123,15 @@ def main(_):
     plt.legend()
     plt.ylim(10, 2e4)
     plt.savefig('../data/poisson_N%03d/fig_power_l%0.2f.png'%(nc, plambda))
+    plt.close()
+
+    plt.plot(k, pxf/(pf*ph)**0.5, label='Final')
+    plt.plot(k, pxi/(pi*ph)**0.5, label='IC')
+    plt.semilogx()
+    plt.grid(which = 'both')
+    plt.legend()
+    plt.ylim(0, 1.1)
+    plt.savefig('../data/poisson_N%03d/fig_rcc_l%0.2f.png'%(nc, plambda))
     plt.close()
     
 
