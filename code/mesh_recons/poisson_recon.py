@@ -30,7 +30,7 @@ tf.random.set_random_seed(200)
 cscratch = "../figs_recon/"
 
 
-tf.flags.DEFINE_integer("nc", 64, "Size of the cube")
+tf.flags.DEFINE_integer("nc", 128, "Size of the cube")
 tf.flags.DEFINE_integer("batch_size", 1, "Batch Size")
 tf.flags.DEFINE_float("box_size", 200, "Batch Size")
 tf.flags.DEFINE_float("a0", 0.1, "initial scale factor")
@@ -38,7 +38,7 @@ tf.flags.DEFINE_float("af", 1.0, "final scale factor")
 tf.flags.DEFINE_integer("nsteps", 5, "Number of time steps")
 tf.flags.DEFINE_bool("nbody", True, "Do nbody evolution")
 tf.flags.DEFINE_string("suffix", "-sm4", "suffix for the folder name")
-tf.flags.DEFINE_float("plambda", 0.01, "Multiplicative factor of Poisson lambda")
+tf.flags.DEFINE_float("plambda", 0.1, "Multiplicative factor of Poisson lambda")
 
 #pyramid flags
 tf.flags.DEFINE_integer("dsample", 2, "downsampling factor")
