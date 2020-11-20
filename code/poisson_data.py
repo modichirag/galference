@@ -21,6 +21,8 @@ import flowpm
 from astropy.cosmology import Planck15
 from flowpm.tfpm import PerturbationGrowth
 from flowpm import linear_field, lpt_init, nbody, cic_paint
+from flowpm.utils import r2c3d, c2r3d
+
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
 from matplotlib import pyplot as plt
 from utils import tools
@@ -39,9 +41,15 @@ tf.flags.DEFINE_float("a0", 0.1, "initial scale factor")
 tf.flags.DEFINE_float("af", 1.0, "final scale factor")
 tf.flags.DEFINE_integer("nsteps", 5, "Number of time steps")
 tf.flags.DEFINE_float("plambda", 0.01, "Multiplicative factor of Poisson lambda")
+tf.flags.DEFINE_float("Rsm", 0.0, "smoothing length of the gaussian for poisson sampling")
 #tf.flags.DEFINE_string("mesh_shape", "row:nx;col:ny", "mesh shape")
 
 FLAGS = tf.flags.FLAGS
+
+
+def graph():
+    pass
+
 
     
 def main(_):
@@ -79,6 +87,7 @@ def main(_):
     ipklin = iuspline(klin, plin)
     stages = np.linspace(a0, a, nsteps, endpoint=True)
 
+    ##Graph
     #pt = PerturbationGrowth(cosmology, a=[a], a_normalize=1.0)
     # Generate a batch of 3D initial conditions
     initial_conditions = flowpm.linear_field(FLAGS.nc,          # size of the cube
@@ -91,24 +100,38 @@ def main(_):
     final_state = nbody(state,  stages, nc)
     tfinal_field = cic_paint(tf.zeros_like(initial_conditions), final_state[0])
 
+    #smooth to regularize?
+    kk = tools.fftk([nc, nc, nc], bs, symmetric=False)
+    kmesh = sum(k**2 for k in kk)**0.5
+    Rsm = FLAGS.Rsm
+    smwts = tf.exp(tf.multiply(-kmesh**2, Rsm**2))
+    basek = r2c3d(tfinal_field, norm=nc**3)
+    basek = tf.multiply(basek, tf.cast(smwts, tf.complex64))
+    base = c2r3d(basek, norm=nc**3)
+    
+    #Poisson sample
     plambda = FLAGS.plambda
-    galmean = tfp.distributions.Poisson(rate = plambda * (1 + tfinal_field))
+    #galmean = tfp.distributions.Poisson(rate = plambda * (1 + tfinal_field))
+    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
     result = galmean.sample()
 
     with tf.Session(config=tf.ConfigProto(
             allow_soft_placement=True, log_device_placement=False)) as sess:
-        a,b,c = sess.run([initial_conditions, tfinal_field, result])
+        a,b,c,d = sess.run([initial_conditions, tfinal_field, result, base])
 
-    print('\nHalo sampled\n', c.sum(), c.min(), c.max(), c.mean())
+    print('\nMin and Max Halo sampled\n', c.min(), c.max())
+    print('\nHalo number desnity ; %0.2e\n'%(c.sum()/bs**3))
 
 
     ##save and diagnostics
-    try : os.makedirs('../data/poisson_N%03d'%nc)
+    ofolder = '../data/poisson_L%04d_N%03d/'%(bs, nc)
+    try : os.makedirs(ofolder)
     except Exception as e : print(e)
     
-    np.save('../data/poisson_N%03d/ic'%nc, a)
-    np.save('../data/poisson_N%03d/final'%nc, b)
-    np.save('../data/poisson_N%03d/psample_%0.2f'%(nc, plambda), c)
+    np.save(ofolder + '/ic', a)
+    np.save(ofolder + '/final', b)
+    np.save(ofolder + '/final_R%d'%Rsm, d)
+    np.save(ofolder + '/psample_R%d_l%0.2f'%(Rsm, plambda), c)
     
     k, pi = tools.power(a[0], boxsize=bs)
     k, pf = tools.power(b[0], boxsize=bs)
@@ -122,7 +145,7 @@ def main(_):
     plt.grid(which = 'both')
     plt.legend()
     plt.ylim(10, 2e4)
-    plt.savefig('../data/poisson_N%03d/fig_power_l%0.2f.png'%(nc, plambda))
+    plt.savefig(ofolder + '/fig_power_R%d_l%0.2f.png'%(Rsm, plambda))
     plt.close()
 
     plt.plot(k, pxf/(pf*ph)**0.5, label='Final')
@@ -131,7 +154,7 @@ def main(_):
     plt.grid(which = 'both')
     plt.legend()
     plt.ylim(0, 1.1)
-    plt.savefig('../data/poisson_N%03d/fig_rcc_l%0.2f.png'%(nc, plambda))
+    plt.savefig(ofolder + '/fig_rcc_R%d_l%0.2f.png'%(Rsm, plambda))
     plt.close()
     
 
@@ -151,7 +174,7 @@ def main(_):
     plt.title('Mesh TensorFlow Single')
     plt.colorbar()
 
-    plt.savefig("../data/poisson_N%03d/fig_field_l%0.2f.png"%(nc, plambda))
+    plt.savefig(ofolder + "/fig_field_R_%d_l%0.2f.png"%(Rsm,  plambda))
 
     exit(0)
 

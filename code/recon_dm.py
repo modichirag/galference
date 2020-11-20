@@ -39,20 +39,12 @@ tf.flags.DEFINE_integer("batch_size", 1, "Batch Size")
 tf.flags.DEFINE_float("box_size", 200, "Batch Size")
 tf.flags.DEFINE_float("a0", 0.1, "initial scale factor")
 tf.flags.DEFINE_float("af", 1.0, "final scale factor")
-tf.flags.DEFINE_integer("nsteps", 3, "Number of time steps")
+tf.flags.DEFINE_integer("nsteps", 5, "Number of time steps")
 tf.flags.DEFINE_bool("nbody", True, "Do nbody evolution")
 tf.flags.DEFINE_string("suffix", "", "suffix for the folder name")
-
-#pyramid flags
-tf.flags.DEFINE_integer("dsample", 2, "downsampling factor")
-tf.flags.DEFINE_integer("hsize", 32, "halo size")
-
-#mesh flags
-tf.flags.DEFINE_integer("nx", 1, "# blocks along x")
-tf.flags.DEFINE_integer("ny", 1, "# blocks along y")
-#tf.flags.DEFINE_string("mesh_shape", "row:16", "mesh shape")
-#tf.flags.DEFINE_string("layout", "nx:b1", "layout rules")
-tf.flags.DEFINE_string("output_file", "timeline", "Name of the output timeline file")
+tf.flags.DEFINE_bool("anneal", True, "Anneal")
+tf.flags.DEFINE_float("lr", 0.01, "Learning rate")
+tf.flags.DEFINE_integer("niter", 100, "Number of iterations")
 
 FLAGS = tf.flags.FLAGS
 
@@ -63,22 +55,24 @@ klin = np.loadtxt('..//data/Planck15_a1p00.txt').T[0].astype(np.float32)
 plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels
-kvec = flowpm.kernels.fftk((nc, nc, nc), symmetric=False)
+#kvec = flowpm.kernels.fftk((nc, nc, nc), symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 stages = np.linspace(a0, a, nsteps, endpoint=True)
 
 
-fpath = "./tmp/"
-#if FLAGS.nbody: fpath = cscratch + "nbody_%d_nx%d_ny%d_mesh%s/"%(nc, FLAGS.nx, FLAGS.ny, FLAGS.suffix)
-#else: fpath = cscratch + "lpt_%d_nx%d_ny%d_mesh%s/"%(nc, FLAGS.nx, FLAGS.ny, FLAGS.suffix)
+fpath = "./tmp/L%04d_N%03d"%(bs, nc)
+if FLAGS.anneal: fpath = fpath + '-anneal'
+fpath = fpath + '%s/'%FLAGS.suffix
 print(fpath)
-for ff in [fpath, fpath + '/figs']:
+for ff in [fpath]:
+#for ff in [fpath, fpath + '/figs']:
     try: os.makedirs(ff)
     except Exception as e: print (e)
 
 
-def recon_prototype(data, anneal=True, nc=FLAGS.nc, bs=FLAGS.box_size, batch_size=FLAGS.batch_size,
+def recon_prototype(data, anneal=FLAGS.anneal, nc=FLAGS.nc, bs=FLAGS.box_size, batch_size=FLAGS.batch_size,
                         a0=FLAGS.a0, a=FLAGS.af, nsteps=FLAGS.nsteps, dtype=tf.float32):
     """
     Prototype of function computing LPT deplacement.
@@ -108,29 +102,28 @@ def recon_prototype(data, anneal=True, nc=FLAGS.nc, bs=FLAGS.box_size, batch_siz
     ##Anneal
     Rsm = tf.placeholder(tf.float32, name='smoothing')
     if anneal :
-    #def anneal
+        print("\nAdd annealing section to graph\n")
         Rsmsq = tf.multiply(Rsm*bs/nc, Rsm*bs/nc)
         smwts = tf.exp(tf.multiply(-kmesh**2, Rsmsq))
         basek = r2c3d(base, norm=nc**3)
         basek = tf.multiply(basek, tf.cast(smwts, tf.complex64))
-        base = c2r3d(basek, norm=nc**3)
-    
-
+        base = c2r3d(basek, norm=nc**3)   
+#
     chisq = tf.multiply(base, base)
     chisq = tf.reduce_sum(chisq)
-    #chisq = tf.multiply(chisq, 1/nc**3, name='chisq')
+    chisq = tf.multiply(chisq, 1/nc**3, name='chisq')
 
     #Prior
     lineark = r2c3d(linear, norm=nc**3)
     priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
     prior = tf.reduce_sum(tf.multiply(priormesh, 1/priorwt))
-    #prior = tf.multiply(prior, 1/nc**3, name='prior')
+    prior = tf.multiply(prior, 1/nc**3, name='prior')
     #
     
     loss = chisq + prior
 
-    #optimizer = tf.optimize.AdamWeightDecayOptimizer(0.01)        
-    opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
+    #opt = tf.train.GradientDescentOptimizer(learning_rate=0.1)
+    opt = tf.train.AdamOptimizer(learning_rate=FLAGS.lr)
 
     # Compute the gradients for a list of variables.
     grads_and_vars = opt.compute_gradients(loss, [linear])
@@ -157,26 +150,11 @@ def main(_):
     dtype=tf.float32
 
     startw = time.time()
-    
-    #layout_rules = mtf.convert_to_layout_rules(FLAGS.layout)
-    #mesh_shape = [("row", FLAGS.nx), ("col", FLAGS.ny)]
-    layout_rules = [("nx_lr", "row"), ("ny_lr", "col"),
-                    ("nx", "row"), ("ny", "col"),
-                    ("ty", "row"), ("tz", "col"),
-                    ("ty_lr", "row"), ("tz_lr", "col"),
-                    ("nx_block","row"), ("ny_block","col")]
 
     tf.random.set_random_seed(100)
     np.random.seed(100)
 
-    mesh_shape = [("row", FLAGS.nx), ("col", FLAGS.ny)]                    
-
-    mesh_size = FLAGS.nx * FLAGS.ny # mesh_shape.size
-    mesh_devices = [""] * mesh_size
-    #mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(
-    #    mesh_shape, layout_rules, mesh_devices)
     
-
     ## Create computational graphs and some initializations   
     #graph = mtf.Graph()
     #mesh = mtf.Mesh(graph, "nbody_mesh")
@@ -214,7 +192,10 @@ def main(_):
     tf.reset_default_graph()
     print('ic constructed')
 
-    linear, final_field, update_ops, loss, chisq, prior, Rsm = recon_prototype(fin)
+    noise = np.random.normal(0, 1, nc**3).reshape(fin.shape)
+    data_noised = fin + noise
+
+    linear, final_field, update_ops, loss, chisq, prior, Rsm = recon_prototype(data_noised)
 
     #initial_conditions = recon_prototype(mesh, fin, nc=FLAGS.nc,  batch_size=FLAGS.batch_size, dtype=dtype)
 
@@ -238,11 +219,11 @@ def main(_):
 
 
         titer = 20
-        niter = 201
+        niter = FLAGS.niter + 1
         iiter = 0
         
         start0 = time.time()
-        RRs = [4, 2, 1, 0.5, 0]
+        RRs = [2, 1, 0.5, 0]
         lrs = np.array([0.1, 0.1, 0.1, 0.1, 0.1])*2
         #lrs = [0.1, 0.05, 0.01, 0.005, 0.001]
         for iR, zlR in enumerate(zip(RRs, lrs)):
@@ -269,8 +250,8 @@ def main(_):
                     
                     dg.saveimfig(i, [ic1, fin1], [ic, fin], fpath+'/figs-R%02d'%(10*RR))
                     dg.save2ptfig(i, [ic1, fin1], [ic, fin], fpath+'/figs-R%02d'%(10*RR), bs)
-            dg.saveimfig(i*(iR+1), [ic1, fin1], [ic, fin], fpath+'/figs')
-            dg.save2ptfig(i*(iR+1), [ic1, fin1], [ic, fin], fpath+'/figs', bs)
+            #dg.saveimfig(i*(iR+1), [ic1, fin1], [ic, fin], fpath+'/figs')
+            #dg.save2ptfig(i*(iR+1), [ic1, fin1], [ic, fin], fpath+'/figs', bs)
 
         ic1, fin1 = sess.run([linear, final_field])
         print('Total time taken for %d iterations is : '%iiter, time.time()-start0)
