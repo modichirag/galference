@@ -36,13 +36,13 @@ np.random.seed(100)
 cscratch = "../figs_recon/"
 
 ##Change things here
-nc, bs = 32, 100
+nc, bs = 64, 200
 a0, a, nsteps = 0.1, 1.0, 5
 stages = np.linspace(a0, a, nsteps, endpoint=True)
 anneal = True
 niter = 200
 plambda = 0.1
-optimizer = 'adam'
+optimizer = 'scipy-lbfgs'
 lr = 0.01
 RRs = [2, 1, 0.5, 0]
 
@@ -58,7 +58,7 @@ kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
 
-fpath = "./tmp/poisson-tf2-%s-%d-p%0.2f/"%(optimizer, nc, plambda)
+fpath = "./tmp/poisson-%s-%d-p%0.2f/"%(optimizer, nc, plambda)
 for ff in [fpath]:
 #for ff in [fpath, fpath + '/figs']:
     try: os.makedirs(ff)
@@ -122,33 +122,6 @@ def main():
         return loss
 
 
-    @tf.function
-    def val_and_grad(x, Rsm):
-        print("val and grad : ", x.shape)
-        with tf.GradientTape() as tape:
-            tape.watch(x)
-            loss = recon_prototype(x, Rsm)
-        grad = tape.gradient(loss, x)
-        return loss, grad
-
-    @tf.function
-    def grad(x, Rsm):
-        with tf.GradientTape() as tape:
-            tape.watch(x)
-            loss = recon_prototype(x, Rsm)
-        grad = tape.gradient(loss, x)
-        return grad
-
-    
-    #Function for LBFSG
-    def func(x, RR):
-        return [vv.numpy().astype(np.float64)  for vv in val_and_grad(x=tf.constant(x, dtype=tf.float32), 
-                                                                      Rsm=tf.constant(RR, dtype=tf.float32))] # 
-
-    # Create an optimizer for Adam.
-    opt = tf.keras.optimizers.Adam(learning_rate=lr)
-
-
 
     #Loop it Reconstruction
     ##Reconstruction
@@ -157,24 +130,64 @@ def main():
                              initial_value=x0, trainable=True)
 
 
+
+    ##
     for iR, RR in enumerate(RRs):
 
-        if optimizer == 'lbfgs':
-            #results = sopt.minimize(fun=func, x0=x0, args = RR, jac=True, method='L-BFGS-B', tol=1e-10, 
-        #                        options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
-            results = sopt.minimize(fun=func, x0=x0, args = RR, jac=True, method='L-BFGS-B', 
-                                options={'maxiter':niter})
+        @tf.function
+        def val_and_grad(x):
+            with tf.GradientTape() as tape:
+                tape.watch(x)
+                loss = recon_prototype(x, tf.constant(RR, dtype=tf.float32))
+            grad = tape.gradient(loss, x)
+            return loss, grad
+
+        @tf.function
+        def grad(x):
+            with tf.GradientTape() as tape:
+                tape.watch(x)
+                loss = recon_prototype(x, tf.constant(RR, dtype=tf.float32))
+            grad = tape.gradient(loss, x)
+            return grad
+
+
+        start = time.time()
+
+        #
+        if optimizer == 'scipy-lbfgs':
+            def func(x):
+                return [vv.numpy().astype(np.float64)  for vv in val_and_grad(x=tf.constant(x, dtype=tf.float32))] # 
+
+            results = sopt.minimize(fun=func, x0=x0, jac=True, method='L-BFGS-B', 
+                                    tol=1e-10, options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
+            #options={'maxiter':niter})
             print(results)
             minic = results.x.reshape(data.shape)
+       
+        #
+        elif optimizer == 'tf2-lbfgs':
+            
+            @tf.function
+            def min_lbfgs(x0):
+                return tfp.optimizer.lbfgs_minimize( val_and_grad, initial_position=x0, tolerance=1e-10, max_iterations=niter)
+                
+            results = min_lbfgs(x0.flatten())
+            print(results)
+            minic = results.position.numpy().reshape(data.shape)
 
+        #    
         elif optimizer == 'adam':
+            
+            opt = tf.keras.optimizers.Adam(learning_rate=lr)
             for i in range(niter):
-                grads = grad([linear], tf.constant(RR, dtype=tf.float32))
+                grads = grad([linear])
                 opt.apply_gradients(zip(grads, [linear]))
             minic = linear.numpy().reshape(data.shape)
 
         #
         print('\nminimized\n')
+        print("Time taken for maxiter %d : "%niter, time.time()-start)
+
         minfin = pm(tf.constant(minic, dtype=tf.float32)).numpy()
         dg.saveimfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'')
         dg.save2ptfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'', bs)
