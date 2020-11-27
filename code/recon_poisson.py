@@ -35,15 +35,20 @@ np.random.seed(100)
 #tf.random.set_random_seed(100)
 cscratch = "../figs_recon/"
 
-
-nc, bs = 64, 200
+##Change things here
+nc, bs = 32, 100
 a0, a, nsteps = 0.1, 1.0, 5
 stages = np.linspace(a0, a, nsteps, endpoint=True)
 anneal = True
-lr = 0.01
 niter = 200
 plambda = 0.1
+optimizer = 'adam'
+lr = 0.01
+RRs = [2, 1, 0.5, 0]
 
+
+
+#Read in constants
 klin = np.loadtxt('..//data/Planck15_a1p00.txt').T[0].astype(np.float32)
 plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
@@ -53,7 +58,7 @@ kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
 
-fpath = "./tmp/poisson-tf2-%d-p%0.2f/"%(nc, plambda)
+fpath = "./tmp/poisson-tf2-%s-%d-p%0.2f/"%(optimizer, nc, plambda)
 for ff in [fpath]:
 #for ff in [fpath, fpath + '/figs']:
     try: os.makedirs(ff)
@@ -64,6 +69,7 @@ for ff in [fpath]:
 dtype=tf.float32
 
 
+@tf.function
 def pm(linear):
     state = lpt_init(linear, a0=0.1, order=1)
     final_state = nbody(state,  stages, nc)
@@ -75,13 +81,13 @@ def main():
 
     startw = time.time()
 
-
     ic = np.load('../data/poisson_L%04d_N%03d/ic.npy'%(bs, nc))
     fin = np.load('../data/poisson_L%04d_N%03d/final.npy'%(bs, nc))
     data = np.load('../data/poisson_L%04d_N%03d/psample_%0.2f.npy'%(bs, nc, plambda))
 
 
-
+    
+    @tf.function
     def recon_prototype(linear, Rsm=0):
         """
         """
@@ -114,43 +120,68 @@ def main():
         loss = logprob + prior
 
         return loss
-#
 
-
-    x0 = np.random.normal(0, 1, nc**3).reshape(fin.shape).astype(np.float32)
-    linear = tf.Variable(name='linmesh', shape=(1, nc, nc, nc), dtype=tf.float32,
-                             initial_value=x0, trainable=True)
-    # Create an optimizer.
-    opt = tf.keras.optimizers.Adam(learning_rate=lr)
-    vars = [linear]
-    
 
     @tf.function
-    def get_grad(x, RR):
+    def val_and_grad(x, Rsm):
+        print("val and grad : ", x.shape)
         with tf.GradientTape() as tape:
             tape.watch(x)
-            loss = recon_prototype(x, RR)
+            loss = recon_prototype(x, Rsm)
+        grad = tape.gradient(loss, x)
+        return loss, grad
+
+    @tf.function
+    def grad(x, Rsm):
+        with tf.GradientTape() as tape:
+            tape.watch(x)
+            loss = recon_prototype(x, Rsm)
         grad = tape.gradient(loss, x)
         return grad
 
+    
+    #Function for LBFSG
+    def func(x, RR):
+        return [vv.numpy().astype(np.float64)  for vv in val_and_grad(x=tf.constant(x, dtype=tf.float32), 
+                                                                      Rsm=tf.constant(RR, dtype=tf.float32))] # 
+
+    # Create an optimizer for Adam.
+    opt = tf.keras.optimizers.Adam(learning_rate=lr)
+
+
+
+    #Loop it Reconstruction
     ##Reconstruction
+    x0 = np.random.normal(0, 1, nc**3).reshape(fin.shape).astype(np.float32) 
+    linear = tf.Variable(name='linmesh', shape=(1, nc, nc, nc), dtype=tf.float32,
+                             initial_value=x0, trainable=True)
 
 
-    RRs = [2, 1, 0.5, 0]
     for iR, RR in enumerate(RRs):
 
-        for i in range(niter):
-            grads = get_grad(vars, RR)
-            opt.apply_gradients(zip(grads, vars))
-            
-        ###
-        minic = linear.numpy().reshape(data.shape)
-        print(minic.shape)
+        if optimizer == 'lbfgs':
+            #results = sopt.minimize(fun=func, x0=x0, args = RR, jac=True, method='L-BFGS-B', tol=1e-10, 
+        #                        options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
+            results = sopt.minimize(fun=func, x0=x0, args = RR, jac=True, method='L-BFGS-B', 
+                                options={'maxiter':niter})
+            print(results)
+            minic = results.x.reshape(data.shape)
+
+        elif optimizer == 'adam':
+            for i in range(niter):
+                grads = grad([linear], tf.constant(RR, dtype=tf.float32))
+                opt.apply_gradients(zip(grads, [linear]))
+            minic = linear.numpy().reshape(data.shape)
+
+        #
         print('\nminimized\n')
         minfin = pm(tf.constant(minic, dtype=tf.float32)).numpy()
         dg.saveimfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'')
         dg.save2ptfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'', bs)
-##
+        ###
+        x0 = minic
+    exit(0)
+
 
 
 if __name__ == "__main__":
