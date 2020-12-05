@@ -3,6 +3,7 @@ import os, sys
 import math, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
 from matplotlib import pyplot as plt
+import argparse
 
 #import tensorflow.compat.v1 as tf
 #tf.disable_v2_behavior()
@@ -33,17 +34,28 @@ import scipy.optimize as sopt
 cosmology=Planck15
 np.random.seed(100)
 #tf.random.set_random_seed(100)
-cscratch = "../figs_recon/"
+
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('--nc', type=int, default=32, help='Grid size')
+parser.add_argument('--bs', type=float, default=100, help='Box Size')
+parser.add_argument('--niter', type=int, default=200, help='Number of iterations/Max iterations')
+parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+parser.add_argument('--optimizer', type=string, default='adam', help='Which optimizer to use')
+parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
+
+args = parser.parse_args()
+
 
 ##Change things here
-nc, bs = 64, 200
+nc, bs = args.nc, args.bs
+niter = args.niter
+plambda = args.plmabda
+optimizer = args.optimizer
+lr = args.lr
+
 a0, a, nsteps = 0.1, 1.0, 5
 stages = np.linspace(a0, a, nsteps, endpoint=True)
 anneal = True
-niter = 200
-plambda = 0.1
-optimizer = 'scipy-lbfgs'
-lr = 0.01
 RRs = [2, 1, 0.5, 0]
 
 
@@ -159,8 +171,8 @@ def main():
                 return [vv.numpy().astype(np.float64)  for vv in val_and_grad(x=tf.constant(x, dtype=tf.float32))] # 
 
             results = sopt.minimize(fun=func, x0=x0, jac=True, method='L-BFGS-B', 
-                                    tol=1e-10, options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
-            #options={'maxiter':niter})
+                                    #tol=1e-10, options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
+                                    options={'maxiter':niter})
             print(results)
             minic = results.x.reshape(data.shape)
        
