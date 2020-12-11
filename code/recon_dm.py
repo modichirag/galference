@@ -36,12 +36,12 @@ np.random.seed(100)
 cscratch = "../figs_recon/"
 
 
-nc, bs = 32, 100
+nc, bs = 64, 200
 a0, a, nsteps = 0.1, 1.0, 5
 stages = np.linspace(a0, a, nsteps, endpoint=True)
 anneal = True
 niter = 200
-optimizer = 'lbfgs'
+optimizer = 'adam'
 lr = 0.01
 RRs = [2, 1, 0.5, 0]
 
@@ -201,6 +201,9 @@ def main():
         dg.save2ptfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'', bs)
         ###
         x0 = minic
+        np.save(fpath + 'ic-%d'%iR, minic)
+        np.save(fpath + 'final-%d'%iR, minfin)
+
     exit(0)
 
 

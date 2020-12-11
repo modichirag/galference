@@ -131,7 +131,8 @@ def main(_):
     np.save(ofolder + '/ic', a)
     np.save(ofolder + '/final', b)
     np.save(ofolder + '/final_R%d'%Rsm, d)
-    np.save(ofolder + '/psample_R%d_l%0.2f'%(Rsm, plambda), c)
+    if Rsm !=0: np.save(ofolder + '/psample_R%d_%0.2f'%(Rsm, plambda), c)
+    else: np.save(ofolder + '/psample_%0.2f'%( plambda), c)
     
     k, pi = tools.power(a[0], boxsize=bs)
     k, pf = tools.power(b[0], boxsize=bs)

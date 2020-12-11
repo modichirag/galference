@@ -40,7 +40,7 @@ parser.add_argument('--nc', type=int, default=32, help='Grid size')
 parser.add_argument('--bs', type=float, default=100, help='Box Size')
 parser.add_argument('--niter', type=int, default=200, help='Number of iterations/Max iterations')
 parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-parser.add_argument('--optimizer', type=string, default='adam', help='Which optimizer to use')
+parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
 
 args = parser.parse_args()
@@ -49,7 +49,7 @@ args = parser.parse_args()
 ##Change things here
 nc, bs = args.nc, args.bs
 niter = args.niter
-plambda = args.plmabda
+plambda = args.plambda
 optimizer = args.optimizer
 lr = args.lr
 
@@ -120,7 +120,7 @@ def main():
         galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
         sample = galmean.sample()
         logprob = -tf.reduce_sum(galmean.log_prob(data))
-        #logprob = tf.multiply(logprob, 1/nc**3, name='logprob')
+        logprob = tf.multiply(logprob, 1/nc**3, name='logprob')
 
 
         #Prior
@@ -171,8 +171,9 @@ def main():
                 return [vv.numpy().astype(np.float64)  for vv in val_and_grad(x=tf.constant(x, dtype=tf.float32))] # 
 
             results = sopt.minimize(fun=func, x0=x0, jac=True, method='L-BFGS-B', 
-                                    #tol=1e-10, options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
-                                    options={'maxiter':niter})
+                                    #tol=1e-10, 
+                                    options={'maxiter':niter, 'ftol': 1e-12, 'gtol': 1e-12, 'eps':1e-12})
+                                    #options={'maxiter':niter})
             print(results)
             minic = results.x.reshape(data.shape)
        
@@ -205,6 +206,8 @@ def main():
         dg.save2ptfig("-R%d"%RR, [minic, minfin], [ic, fin], fpath+'', bs)
         ###
         x0 = minic
+
+
     exit(0)
 
 
