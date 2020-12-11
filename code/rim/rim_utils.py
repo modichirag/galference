@@ -38,7 +38,7 @@ class RIM3D(tf.keras.Model):
             v = self.beta_2*v + (1-self.beta_2)*gradient**2
             mc = m/(1-self.beta_1**t)
             vc = v/(1-self.beta_2**t)
-            delta = -1.*self.lr*mc/(np.sqrt(vc) + self.eps)
+            delta = -1.*self.lr*mc/(tf.sqrt(vc) + self.eps)
 
             concat_input = tf.stack([pos, delta], axis=-1)
             cell_input = self.input_layer(concat_input)            
