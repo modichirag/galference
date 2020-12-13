@@ -65,19 +65,68 @@ params['nc'] = nc
 
 
 
-def get_data(nsims=100):
+def get_ps(iterand, truth):
+    ic, fin = truth
+    ic1, fin1 = iterand
+
+    pks = []
+    if abs(ic1[0].mean()) < 1e-3: ic1[0] += 1
+    #if abs(ic[0].mean()) < 1e-3: ic[0] += 1                                                                                                                  
+    k, p1 = tools.power(ic1[0]+1, boxsize=bs)
+    k, p2 = tools.power(ic[0]+1, boxsize=bs)
+    k, p12 = tools.power(ic1[0]+1, f2=ic[0]+1, boxsize=bs)
+    pks.append([p1, p2, p12])
+    if fin1[0].mean() < 1e-3: fin1[0] += 1
+    if fin[0].mean() < 1e-3: fin[0] += 1
+    k, p1 = tools.power(fin1[0], boxsize=bs)
+    k, p2 = tools.power(fin[0], boxsize=bs)
+    k, p12 = tools.power(fin1[0], f2=fin[0], boxsize=bs)
+    pks.append([p1, p2, p12])
+
+    return k, pks
+
+
+
+def test_callback(pred, x_init, xx, yy, suff='', pref=''):
+            
+    fig, ax = plt.subplots(1, 3, figsize = (12, 4))
+    vmin, vmax = xx[0].sum(axis=0).min(), xx[0].sum(axis=0).max()
+    ax[0].imshow(xx[0].sum(axis=0), vmin=vmin, vmax=vmax)
+    ax[0].set_title('Truth')
+    ax[1].imshow(x_init[0].sum(axis=0), vmin=vmin, vmax=vmax)
+    ax[1].set_title('initial point')
+    ax[2].imshow(pred[0].sum(axis=0), vmin=vmin, vmax=vmax)
+    ax[2].set_title('RIM %d step'%(params['rim_iter']))
+    plt.savefig(pref + 'rim-im' + suff + '.png')
+    plt.close()
+    
+    ##
+    fig, ax = plt.subplots(1, 2, figsize=(9, 4))
+    k, pks = get_ps([x_init, pm(x_init).numpy()], [xx, yy])
+    for i in range(2):
+        ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d--'%i)
+        ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d--'%i)
+
+    k, pks = get_ps([pred, pm(pred).numpy()], [xx, yy])
+    for i in range(2):
+        ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d'%i)
+        ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d'%i)
+
+    for axis in ax: 
+        axis.semilogx()
+        axis.grid(which='both')
+    plt.savefig(pref + 'rim-2pt' + suff + '.png')
+    plt.close()
+
+
+    
+def get_data(nsims=1000):
     dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
 
     return traindata, testdata
     
-#    BATCH_SIZE_PER_REPLICA = 64
-#    GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
-#    train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-#    test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(GLOBAL_BATCH_SIZE) 
-#    return train_dataset, test_dataset
-#
 
 @tf.function
 def pm(linear):
@@ -120,9 +169,6 @@ def recon_dm_grad(x, y):
     return grad
 
 
-
-
-
 #strategy = tf.distribute.MirroredStrategy(devices=["/device:GPU:0", "/device:GPU:1"])
 strategy = tf.distribute.MirroredStrategy()
 print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
@@ -148,9 +194,14 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 with strategy.scope():
     rim = build_rim(params)
     grad_fn = recon_dm_grad
+
+    def get_opt(lr):
+        return  tf.keras.optimizers.Adam(learning_rate=lr)
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=rim)
+    checkpoint = tf.train.Checkpoint(model=rim)
     #
+
+
 
 def train_step(inputs):
     x_true, y = inputs
@@ -158,65 +209,18 @@ def train_step(inputs):
     with tf.GradientTape() as tape:
         x_pred, states = rim(x_init, y, grad_fn)
         res  = (x_true - x_pred)
-        loss = tf.reduce_mean(tf.square(res), axis=(1, 2, 3, 4))
+        loss = tf.reduce_mean(tf.square(res)) ##This is not advised, come back to this
     gradients = tape.gradient(loss, rim.trainable_variables)
+    #optimizer = get_opt(lr)
     optimizer.apply_gradients(zip(gradients, rim.trainable_variables))
     return loss
+
 
 def test_step(inputs):
     x_true, y = inputs
     x_init = tf.random.normal(x_true.shape)
     x_pred, _ = rim(x_init, y, grad_fn)
     return x_pred, x_init, x_true, y
-
-
-
-
-##with strategy.scope():
-##  # Set reduction to `none` so we can do the reduction afterwards and divide by
-##  # global batch size.
-##  loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
-##      from_logits=True,
-##      reduction=tf.keras.losses.Reduction.NONE)
-##  def compute_loss(labels, predictions):
-##    per_example_loss = loss_object(labels, predictions)
-##    return tf.nn.compute_average_loss(per_example_loss, global_batch_size=GLOBAL_BATCH_SIZE)
-##
-##
-##with strategy.scope():
-##  test_loss = tf.keras.metrics.Mean(name='test_loss')
-##
-##  model = create_model()
-##
-##  optimizer = tf.keras.optimizers.Adam()
-##
-##
-##
-##
-##
-##def train_step(inputs):
-##  images, labels = inputs
-##
-##  with tf.GradientTape() as tape:
-##    predictions = model(images, training=True)
-##    loss = compute_loss(labels, predictions)
-##
-##  gradients = tape.gradient(loss, model.trainable_variables)
-##  optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-##
-##  train_accuracy.update_state(labels, predictions)
-##  return loss 
-##
-##
-##def test_step(inputs):
-##  images, labels = inputs
-##
-##  predictions = model(images, training=False)
-##  t_loss = loss_object(labels, predictions)
-##
-##  test_loss.update_state(t_loss)
-##  test_accuracy.update_state(labels, predictions)
-##
 
 
 
@@ -230,35 +234,42 @@ def distributed_train_step(dataset_inputs):
 
 @tf.function
 def distributed_test_step(dataset_inputs):
-  return strategy.run(test_step, args=(dataset_inputs,))
+    return strategy.run(test_step, args=(dataset_inputs,))
 
 
-#
-#counter = 0
-#for x in test_dist_dataset:
-#    counter += 1
-#    print('counter : ', counter)
-#    a, b, c, d = distributed_test_step(x)
-#    print(len(a.values))
-#    print(a.values[0].shape)
-#
+
 
 losses = []    
-for epoch in range(EPOCHS):
 
+for epoch in range(EPOCHS):
+    print("\nFor epoch %d\n"%epoch)
     #TRAIN LOOP
     total_loss = 0.0
     num_batches = 0
+    starte = time.time()
     for x in train_dist_dataset:
-        total_loss += distributed_train_step(x)
-        print(epoch, num_batches, total_loss)
+        startb = time.time()
+        loss = distributed_train_step(x)
+        losses.append(loss.numpy())
+        total_loss += loss
+        print("epoch %d, num batch %d, loss : "%(epoch, num_batches), loss)
+        print("Time taken : ", time.time() - startb)
         num_batches += 1
     train_loss = total_loss / num_batches
     print("Train loss for epoch %d "%epoch, train_loss)
-    losses = losses + list(train_loss.numpy())
+    print("Time taken for epoch %d: "%epoch, time.time() - starte)
     plt.plot(losses)
     plt.savefig('losses.png')
+    counter = 0
+    for x in test_dist_dataset:
+        a, b, c, d = distributed_test_step(x)
+        a, b, c, d = a.values[0], b.values[0], c.values[0], d.values[0]
+        test_callback(a.numpy()[-1], b.numpy(), c.numpy(), d.numpy(), suff="-%d"%epoch)
+        break
 
+
+
+    
 
 #    
 ##
