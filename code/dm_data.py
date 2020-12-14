@@ -5,16 +5,13 @@ import numpy as np
 import os
 import math
 import tensorflow as tf
-import tensorflow_probability as tfp
+#import tensorflow_probability as tfp
 import argparse
 
 import sys
 #sys.path.pop(6)
 sys.path.append('../')
 sys.path.append('../utils/')
-#import flowpm.mesh_ops as mpm
-#import flowpm.mtfpm as mtfpm
-#import flowpm.mesh_utils as mesh_utils
 import flowpm
 from astropy.cosmology import Planck15
 from flowpm.tfpm import PerturbationGrowth
@@ -22,10 +19,21 @@ from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
 
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
+import matplotlib
+matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 from utils import tools
 
-cosmology=Planck15
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--nc', type=int, default=32, help='Grid size')
 parser.add_argument('--bs', type=float, default=100, help='Box Size')
@@ -35,18 +43,21 @@ parser.add_argument('--optimizer', type=str, default='adam', help='Which optimiz
 parser.add_argument('--batch_size', type=int, default=1, help='batch size')
 parser.add_argument('--nsteps', type=int, default=3, help='Number of time steps')
 parser.add_argument('--nsims', type=int, default=2, help='Number of simulationss')
+parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simulationss')
+parser.add_argument('--lpt_order', type=int, default=1, help='Order of LPT Initial conditions')
 
 args = parser.parse_args()
-
+print(args.nbody)
 
 ##Change things here
+cosmology=Planck15
 nc, bs = args.nc, args.bs
 niter = args.niter
 optimizer = args.optimizer
 lr = args.lr
 batch_size = args.batch_size
-a0, a, nsteps = 0.1, 1.0,  args.nsteps
-stages = np.linspace(a0, a, nsteps, endpoint=True)
+a0, af, nsteps = 0.1, 1.0,  args.nsteps
+stages = np.linspace(a0, af, nsteps, endpoint=True)
 nsims = args.nsims
 
 
@@ -56,7 +67,9 @@ plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
 
 
-fpath = '../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+#fpath  = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
+if args.nbody: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+else: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
 try: os.makedirs(fpath)
 except: print('Folder exists')
 
@@ -65,8 +78,13 @@ except: print('Folder exists')
 def pm():
     print("PM graph")
     linear = flowpm.linear_field(nc, bs, ipklin, batch_size=batch_size)
-    state = lpt_init(linear, a0=0.1, order=1)
-    final_state = nbody(state,  stages, nc)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
     tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
     return linear, tfinal_field
 
