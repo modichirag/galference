@@ -7,6 +7,8 @@ import tensorflow as tf
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
+import matplotlib
+matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 from rim_utils import build_rim
@@ -16,6 +18,15 @@ from flowpm.utils import r2c3d, c2r3d
 sys.path.append('../../utils/')
 import tools
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 parser = argparse.ArgumentParser(description='Process some integers.')
@@ -26,6 +37,15 @@ parser.add_argument('--niter', type=int, default=200, help='Number of iterations
 parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
 parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
+parser.add_argument('--nsims', type=int, default=100, help='Number of simulations')
+parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simulationss')
+parser.add_argument('--lpt_order', type=int, default=1, help='Order of LPT Initial conditions')
+parser.add_argument('--input_size', type=int, default=8, help='Input layer channel size')
+parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
+parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
+parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
+
+
 
 args = parser.parse_args()
 
@@ -34,8 +54,8 @@ nc, bs = args.nc, args.bs
 niter = args.niter
 optimizer = args.optimizer
 lr = args.lr
-a0, a, nsteps = 0.1, 1.0, 3
-stages = np.linspace(a0, a, nsteps, endpoint=True)
+a0, af, nsteps = 0.1, 1.0,  args.nsteps
+stages = np.linspace(a0, af, nsteps, endpoint=True)
 #anneal = True
 #RRs = [2, 1, 0.5, 0]
 
@@ -51,17 +71,18 @@ priorwt = ipklin(kmesh)
 
 #RIM Params
 params = {}
-params['input_size'] = 8
-params['cell_size'] = 8
+params['input_size'] = args.input_size
+params['cell_size'] = args.cell_size
 params['cell_kernel_size'] = 5
 params['input_kernel_size'] = 5
 params['output_kernel_size'] = 5
-params['rim_iter'] = 10
+params['rim_iter'] = args.rim_iter
 params['nc'] = nc
 
 
-def get_data(nsims=100):
-    dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+def get_data(nsims=args.nsims):
+    if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
@@ -70,8 +91,13 @@ def get_data(nsims=100):
 
 @tf.function
 def pm(linear):
-    state = lpt_init(linear, a0=a0, order=1)
-    final_state = nbody(state, stages, nc)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
     tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
     return tfinal_field
 

@@ -69,7 +69,7 @@ class myAdam(tf.keras.Model):
             
     def call(self, x_init, y, grad_fn, grad_args=[], ):
         
-        outputs_ta = tf.TensorArray(size=self.niter+1, dtype=tf.float32)
+        #outputs_ta = tf.TensorArray(size=self.niter+1, dtype=tf.float32)
             
         i = tf.constant(0, dtype=tf.int32)
         curr_pos = x_init        
@@ -91,11 +91,11 @@ class myAdam(tf.keras.Model):
             return i +1 , new_pos, m, v
         
         while tf.less(i, tf.constant(self.niter)):
-            outputs_ta = outputs_ta.write(i, curr_pos)
+            #outputs_ta = outputs_ta.write(i, curr_pos)
             i, curr_pos,  m, v =  body(i, curr_pos,  m, v)
-        outputs_ta = outputs_ta.write(i, curr_pos)
-        return outputs_ta.stack()
-
+        #outputs_ta = outputs_ta.write(i, curr_pos)
+        #return outputs_ta.stack()
+        return curr_pos
 
 
 def build_rim(params):
