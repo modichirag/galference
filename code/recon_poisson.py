@@ -9,17 +9,17 @@ import argparse
 #tf.disable_v2_behavior()
 import tensorflow as tf
 import tensorflow_probability as tfp
-import mesh_tensorflow as mtf
 
+import sys
+#sys.path.pop(6)
 import flowpm
-import flowpm.mesh_ops as mpm
-import flowpm.mtfpm as mtfpm
-import flowpm.mesh_utils as mesh_utils
 from astropy.cosmology import Planck15
 from flowpm.tfpm import PerturbationGrowth
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
 
+
+sys.path.append('../')
 sys.path.append('../utils/')
 import tools
 import diagnostics as dg
@@ -35,6 +35,16 @@ cosmology=Planck15
 np.random.seed(100)
 #tf.random.set_random_seed(100)
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--nc', type=int, default=32, help='Grid size')
 parser.add_argument('--bs', type=float, default=100, help='Box Size')
@@ -42,6 +52,9 @@ parser.add_argument('--niter', type=int, default=200, help='Number of iterations
 parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
 parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
+parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simulationss')
+parser.add_argument('--lpt_order', type=int, default=1, help='Order of LPT Initial conditions')
+parser.add_argument('--nsteps', type=int, default=3, help='Number of time steps')
 
 args = parser.parse_args()
 
@@ -52,9 +65,8 @@ niter = args.niter
 plambda = args.plambda
 optimizer = args.optimizer
 lr = args.lr
-
-a0, a, nsteps = 0.1, 1.0, 5
-stages = np.linspace(a0, a, nsteps, endpoint=True)
+a0, af, nsteps = 0.1, 1.0, args.nsteps
+stages = np.linspace(a0, af, nsteps, endpoint=True)
 anneal = True
 RRs = [2, 1, 0.5, 0]
 
@@ -70,7 +82,8 @@ kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
 
-fpath = "./tmp/poisson-%s-%d-p%0.2f/"%(optimizer, nc, plambda)
+#fpath = "./tmp/poisson-%s-%d-p%0.2f/"%(optimizer, nc, plambda)
+fpath = "./tmp/poisson-%d-p%0.2f/"%(nc, plambda)
 for ff in [fpath]:
 #for ff in [fpath, fpath + '/figs']:
     try: os.makedirs(ff)
@@ -83,8 +96,13 @@ dtype=tf.float32
 
 @tf.function
 def pm(linear):
-    state = lpt_init(linear, a0=0.1, order=1)
-    final_state = nbody(state,  stages, nc)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
     tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
     return tfinal_field
 
@@ -93,9 +111,18 @@ def main():
 
     startw = time.time()
 
-    ic = np.load('../data/poisson_L%04d_N%03d/ic.npy'%(bs, nc))
-    fin = np.load('../data/poisson_L%04d_N%03d/final.npy'%(bs, nc))
-    data = np.load('../data/poisson_L%04d_N%03d/psample_%0.2f.npy'%(bs, nc, plambda))
+    if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03/'%(bs, nc, nsteps, plambda*100)
+    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+    ic, fin, data = np.load(dpath + '%04d.npy'%0)
+    ic, fin, data = np.expand_dims(ic, 0), np.expand_dims(fin, 0), np.expand_dims(data, 0)
+    print(ic.shape, fin.shape, data.shape)
+
+
+    check = pm(tf.constant(ic)).numpy()
+    print(fin/check)
+    #ic = np.load('../data/poisson_L%04d_N%03d/ic.npy'%(bs, nc))
+    #fin = np.load('../data/poisson_L%04d_N%03d/final.npy'%(bs, nc))
+    #data = np.load('../data/poisson_L%04d_N%03d/psample_%0.2f.npy'%(bs, nc, plambda))
 
 
     
