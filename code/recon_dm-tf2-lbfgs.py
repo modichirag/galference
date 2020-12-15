@@ -45,7 +45,7 @@ klin = np.loadtxt('..//data/Planck15_a1p00.txt').T[0].astype(np.float32)
 plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels
-kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=bs, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
@@ -61,6 +61,7 @@ for ff in [fpath]:
 dtype=tf.float32
 
 
+@tf.function
 def pm(linear):
     state = lpt_init(linear, a0=0.1, order=1)
     final_state = nbody(state,  stages, nc)
@@ -94,6 +95,7 @@ def main():
 
 
 
+    @tf.function
     def recon_prototype(linear, Rsm=0):
         """
         """
@@ -138,7 +140,7 @@ def main():
     @tf.function
     def min_lbfgs(x0, RR):
         return tfp.optimizer.lbfgs_minimize(
-            lambda x: val_and_grad(x, RR),
+            lambda x: val_and_grad(x, tf.constant(RR, dtype=tf.float32)),
             initial_position=x0,
             tolerance=1e-10,
             max_iterations=200)

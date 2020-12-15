@@ -77,7 +77,7 @@ klin = np.loadtxt('..//data/Planck15_a1p00.txt').T[0].astype(np.float32)
 plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels
-kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=bs, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
