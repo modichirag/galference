@@ -80,8 +80,10 @@ smwts = tf.exp(tf.multiply(-kmesh**2, Rsm**2))
 
 ##Folder
 ##save and diagnostics
-if args.nbody: fpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03/'%(bs, nc, nsteps, plambda*100)
-else: fpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+#if args.nbody: fpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03/'%(bs, nc, nsteps, plambda*100)
+#else: fpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+if args.nbody: fpath = '../data/rim-data/poisson_L%04d_N%03d_T%02d_p%03/'%(bs, nc, nsteps, plambda*100)
+else: fpath = '../data/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
 try : os.makedirs(fpath)
 except Exception as e : print(e)
 

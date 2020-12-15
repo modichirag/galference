@@ -3,6 +3,10 @@ import tensorflow as tf
 from convolutional_recurrent import ConvLSTM3DCell
 from tensorflow.python.keras.layers import Conv3D
 
+import sys
+sys.path.append('../../utils/')
+import tools
+
 
 class RIM3D(tf.keras.Model):
 
@@ -60,11 +64,13 @@ class RIM3D(tf.keras.Model):
 
 class myAdam(tf.keras.Model):
 
-    def __init__(self, niter):
+    def __init__(self, niter, lr=0.1):
         super(myAdam, self).__init__()
         self.niter = niter
-        self.beta_1, self.beta_2 = 0.9, 0.999
-        self.lr, self.eps = 0.1, 1e-7
+        self.lr = lr
+        self.beta_1 = 0.9
+        self.beta_2 = 0.999
+        self.eps =  1e-7
             
             
     def call(self, x_init, y, grad_fn, grad_args=[], ):
@@ -114,3 +120,6 @@ def build_rim(params):
     rim = RIM3D(cell, output_layer, input_layer, niter=params['rim_iter'])
 
     return rim
+
+
+

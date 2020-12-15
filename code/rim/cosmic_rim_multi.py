@@ -326,7 +326,7 @@ for epoch in range(EPOCHS):
 
         break
 
-    rim.save_weights(ofolder + '/%d.png'%epoch)
+    rim.save_weights(ofolder + '/%d'%epoch)
     
     
 

@@ -67,9 +67,10 @@ plin = np.loadtxt('..//data/Planck15_a1p00.txt').T[1].astype(np.float32)
 ipklin = iuspline(klin, plin)
 
 
-#fpath  = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
-if args.nbody: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-else: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+#if args.nbody: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+#else: fpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+if args.nbody: fpath = '../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+else: fpath = '../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
 try: os.makedirs(fpath)
 except: print('Folder exists')
 
