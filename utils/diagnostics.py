@@ -70,17 +70,17 @@ def saveimfig2x2(i, iterand, truth, fpath, cmapic='RdYlBu_r', cmapfin='YlOrRd', 
 
 
 
-def save2ptfig(i, iterand, truth, fpath, bs, fsize=12):
+def save2ptfig(i, iterand, truth, fpath, bs, fsize=12, save=True, retfig=False):
 
     ic, fin = truth
     ic1, fin1 = iterand
 
     pks = []
-    if ic1[0].mean() < 1e-3: ic1[0] += 1
-    if ic[0].mean() < 1e-3: ic[0] += 1
-    k, p1 = tools.power(1+ic1[0], boxsize=bs)
-    k, p2 = tools.power(1+ic[0], boxsize=bs)
-    k, p12 = tools.power(1+ic1[0], f2=1+ic[0], boxsize=bs)
+    if abs(ic1[0].mean()) < 1e-3: ic1[0] += 1
+    #if abs(ic[0].mean()) < 1e-3: ic[0] += 1
+    k, p1 = tools.power(ic1[0]+1, boxsize=bs)
+    k, p2 = tools.power(ic[0]+1, boxsize=bs)
+    k, p12 = tools.power(ic1[0]+1, f2=ic[0]+1, boxsize=bs)
     pks.append([p1, p2, p12])
     if fin1[0].mean() < 1e-3: fin1[0] += 1
     if fin[0].mean() < 1e-3: fin[0] += 1
@@ -117,9 +117,12 @@ def save2ptfig(i, iterand, truth, fpath, bs, fsize=12):
         axis.legend(fontsize=fsize)
         axis.grid(which='both')
         axis.set_xlabel('k (h/Mpc)', fontsize=fsize)
+
     plt.tight_layout()
-    plt.savefig(fpath + '/recon2pt%s.png'%str(i))
-    plt.close()
+    if save: 
+        plt.savefig(fpath + '/recon2pt%s.png'%str(i))
+        plt.close()
+    if retfig: return fig, ax
 
 
 

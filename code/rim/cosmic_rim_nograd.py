@@ -12,15 +12,11 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 from rim_utils import build_rim, myAdam
-from recon_models import Recon_DM
-
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
 sys.path.append('../../utils/')
 import tools
-
-
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -31,7 +27,6 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
-
 
 
 parser = argparse.ArgumentParser(description='Process some integers.')
@@ -78,26 +73,15 @@ priorwt = ipklin(kmesh)
 params = {}
 params['input_size'] = args.input_size
 params['cell_size'] = args.cell_size
-params['cell_kernel_size'] = 7
-params['input_kernel_size'] = 7
-params['output_kernel_size'] = 7
+params['cell_kernel_size'] = 5
+params['input_kernel_size'] = 5
+params['output_kernel_size'] = 5
 params['rim_iter'] = args.rim_iter
-params['input_activation'] = 'tanh'
-params['output_activation'] = 'linear'
 params['nc'] = nc
 
 
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
-fid_recon = Recon_DM(nc, bs, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
-
-suffpath = '_7channels_tanh'
-if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
-try: os.makedirs(ofolder)
-except Exception as e: print(e)
-
-
 
 
 def get_data(nsims=args.nsims):
@@ -108,9 +92,6 @@ def get_data(nsims=args.nsims):
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
-
-
-
 
 
 
@@ -153,7 +134,16 @@ def recon_dm(linear, data):
 
 
 @tf.function
+def recon_dm_grad_true(x, y):
+    with tf.GradientTape() as tape:
+        tape.watch(x)
+        loss = recon_dm(x, y)[0]
+    grad = tape.gradient(loss, x)
+    return grad
+
+@tf.function
 def recon_dm_grad(x, y):
+    return y
     with tf.GradientTape() as tape:
         tape.watch(x)
         loss = recon_dm(x, y)[0]
@@ -171,19 +161,23 @@ def check_im(xx, x_init, pred, fname=None):
     ax[2].imshow(pred.sum(axis=0), vmin=vmin, vmax=vmax)
     ax[2].set_title('RIM recon')
     if fname is not None: plt.savefig(fname)
-    else: plt.savefig(ofolder + 'rim-im.png')
+    else: plt.savefig('rim-im.png')
     plt.close()
 
 
 
-def check_2pt(xx, yy, rim, grad_fn, compares, nrim=10, fname=None):
+def check_2pt(xx, yy, rim, grad_rim, grad_adam, nrim=10, fname=None):
     truemesh = [xx[0], yy[0]]
     rimpreds = []
     for it in range(nrim):
         x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-        #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-        pred = rim(tf.constant(x_init), tf.constant(yy), grad_fn)[0][-1]
+        pred = rim(tf.constant(x_init), tf.constant(yy), grad_rim)[0][-1]
+        if it == 0: check_im(xx[0], x_init[0], pred.numpy()[0])
         rimpreds.append([pred[0].numpy(), pm(pred)[0].numpy()])
+    pred_adam = adam(tf.constant(x_init), yy, grad_adam)
+    pred_adam = [pred_adam[0].numpy(), pm(pred_adam)[0].numpy()]
+    pred_adam10 = adam10(tf.constant(x_init), yy, grad_adam)
+    pred_adam10 = [pred_adam10[0].numpy(), pm(pred_adam10)[0].numpy()]
 
     fig, ax = plt.subplots(1, 2, figsize=(9, 4), sharex=True)
     for ip, preds in enumerate(rimpreds):
@@ -197,9 +191,8 @@ def check_2pt(xx, yy, rim, grad_fn, compares, nrim=10, fname=None):
 
     lss = ['-', '--', ':', '-.']
     lws = [ 1, 1, 2, 2]
-    lbls = ['Adam', 'Adam 10x', 'Best recon']
-    #for ip, preds in enumerate([pred_adam, pred_adam10]):
-    for ip, preds in enumerate(compares):
+    lbls = ['Adam', 'Adam 10x']
+    for ip, preds in enumerate([pred_adam, pred_adam10]):
         k, pks = tools.get_ps(preds, truemesh, bs)
         for i in range(2):
             lbl = None
@@ -224,8 +217,6 @@ def check_2pt(xx, yy, rim, grad_fn, compares, nrim=10, fname=None):
 
 
 
-
-
 def main():
     """
     Model function for the CosmicRIM.
@@ -235,7 +226,6 @@ def main():
     grad_fn = recon_dm_grad
     #
     traindata, testdata = get_data()
-
 
     #
     # @tf.function
@@ -250,15 +240,15 @@ def main():
 
 
     ##Train and save
-    piter, testiter  = 10, 50
+    piter, testiter  = 10, 25
     losses = []
     lrs = [0.001, 0.0005, 0.0001]
-    liters = [201, 501, 501]
+    liters = [201, 101, 1001]
     trainiter = 0 
     start = time.time()
-    x_test, y_test = None, None
 
-    for il in range(3):
+
+    for il in range(1):
         print('Learning rate = %0.3e'%lrs[il])
         opt = tf.keras.optimizers.Adam(learning_rate=lrs[il])
 
@@ -266,8 +256,6 @@ def main():
             idx = np.random.randint(0, traindata.shape[0], args.batch_size)
             xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
             x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-            #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-            
 
             loss, gradients = rim_train(x_true=tf.constant(xx), 
                                     x_init=tf.constant(x_init), 
@@ -282,31 +270,17 @@ def main():
                 start = time.time()
             if i%testiter == 0: 
                 plt.plot(losses)
-                plt.savefig(ofolder + 'losses.png')
+                plt.savefig('losses.png')
                 plt.close()
 
-                ##check 2pt and comapre to Adam
-                #idx = np.random.randint(0, testdata.shape[0], 1)
-                #xx, yy = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
-                if x_test is None:
-                    idx = np.random.randint(0, testdata.shape[0], 1)
-                    x_test, y_test = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
-                    pred_adam = adam(tf.constant(x_init), tf.constant(y_test), grad_fn)
-                    pred_adam = [pred_adam[0].numpy(), pm(pred_adam)[0].numpy()]
-                    pred_adam10 = adam10(tf.constant(x_init), tf.constant(y_test), grad_fn)
-                    pred_adam10 = [pred_adam10[0].numpy(), pm(pred_adam10)[0].numpy()]
-                    minic, minfin = fid_recon.reconstruct(tf.constant(y_test), RRs=[1.0, 0.0], niter=args.rim_iter*10, lr=0.1)
-                    compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
-                    print('Test set generated')
+                #check 2pt and comapre to Adam
+                idx = np.random.randint(0, testdata.shape[0], 1)
+                xx, yy = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
+                check_2pt(xx, yy, rim, grad_fn, grad_adam=recon_dm_grad_true, fname='norim-2pt.png'))
+                
 
-                x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
-                #x_init = (y_test - (y_test.max() - y_test.min())/2.)/y_test.std() + np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
-                pred = rim(tf.constant(x_init), tf.constant(y_test), grad_fn)[0][-1]
-                check_im(x_test[0], x_init[0], pred.numpy()[0], fname=ofolder + 'rim-im-%04d.png'%trainiter)
-                check_2pt(x_test, y_test, rim, grad_fn, compares, fname=ofolder + 'rim-2pt-%04d.png'%trainiter)
-
-                rim.save_weights(ofolder + '/%d'%trainiter)
-
+    #             savepath = './rim-models/L%04d_N%03d_T%02d-c8/iter-%04d'%(bs, nc, nsteps, trainiter)
+    #             testrim.save_weights(savepath, overwrite=False)
             trainiter  += 1
 
 
