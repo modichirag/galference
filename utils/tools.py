@@ -270,7 +270,7 @@ def shear(mesh, k):
 #################################################################################
 
 
-def power(f1, f2=None, boxsize=1.0, k = None, symmetric=True, demean=True):
+def power(f1, f2=None, boxsize=1.0, k = None, symmetric=True, demean=True, eps=1e-9):
     """
     Calculate power spectrum given density field in real space & boxsize.
     Divide by mean, so mean should be non-zero
@@ -304,9 +304,30 @@ def power(f1, f2=None, boxsize=1.0, k = None, symmetric=True, demean=True):
     H, edges = numpy.histogram(k.flat, weights=x.flat, bins=f1.shape[0]) 
     N, edges = numpy.histogram(k.flat, bins=edges)
     center= edges[1:] + edges[:-1]
-    
-    return 0.5 * center, H *boxsize**3 / N
+    power = H *boxsize**3 / N
+    power[power == 0] = np.NaN
+    return 0.5 * center,  power
 
 
 #################################################################################
 
+
+def get_ps(iterand, truth, bs):
+    ic, fin = truth
+    ic1, fin1 = iterand
+
+    pks = []
+    if abs(ic1.mean()) < 1e-3: ic1 += 1
+    #if abs(ic.mean()) < 1e-3: ic += 1                                                                                                                  
+    k, p1 = power(ic1+1, boxsize=bs)
+    k, p2 = power(ic+1, boxsize=bs)
+    k, p12 = power(ic1+1, f2=ic+1, boxsize=bs)
+    pks.append([p1, p2, p12])
+    if fin1.mean() < 1e-3: fin1 += 1
+    if fin.mean() < 1e-3: fin += 1
+    k, p1 = power(fin1, boxsize=bs)
+    k, p2 = power(fin, boxsize=bs)
+    k, p12 = power(fin1, f2=fin, boxsize=bs)
+    pks.append([p1, p2, p12])
+
+    return k, pks
