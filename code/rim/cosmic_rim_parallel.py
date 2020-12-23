@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_series, myAdam
+from rim_utils import build_rim_parallel, myAdam
 from recon_models import Recon_DM
 
 import flowpm
@@ -95,7 +95,7 @@ adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 fid_recon = Recon_DM(nc, bs, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
 
-suffpath = '_series-44'
+suffpath = '_parallel-44'
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
@@ -105,10 +105,10 @@ except Exception as e: print(e)
 
 
 def get_data(nsims=args.nsims):
-    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
-    if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    else: dpath = '../../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+    if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+    #if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+    #else: dpath = '../../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
@@ -164,7 +164,7 @@ def recon_dm_grad(x, y):
 #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
 #pred = rim(tf.constant(x_init), tf.constant(yy), recon_dm_grad)
 #print(pred.shape)
-Z#
+#
 
 
 
@@ -240,11 +240,16 @@ def main():
     Model function for the CosmicRIM.
     """
 
-    rim = build_rim_series(params)
+    rim = build_rim_parallel(params)
     grad_fn = recon_dm_grad
     #
     traindata, testdata = get_data()
+    idx = np.random.randint(0, traindata.shape[0], 1)
+    xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
+    x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+    x_pred = rim(x_init, yy, grad_fn)
 
+    
 
     #
     # @tf.function
