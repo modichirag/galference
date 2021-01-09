@@ -137,7 +137,7 @@ def get_ps(iterand, truth):
 def get_data(nsims=args.nsims, posdata=True):
 
     path = '//mnt/ceph/users/cmodi/cosmo4d/z00/'
-    path = '/project/projectdirs/m3058/chmodi/rim-data/halos/z00/'
+    #path = '/project/projectdirs/m3058/chmodi/rim-data/halos/z00/'
     path = path + '/L%04d_N%04d_D%04d//'%(bs, nc, numd*1e4)
     #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
     #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
@@ -252,7 +252,7 @@ BATCH_SIZE_PER_REPLICA = params['batch_size']
 GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
 EPOCHS = params['epoch']
 #train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-train_dataset = tf.data.Dataset.from_tensor_slices((np.arange(traindata.shape[0]), np.arange(traindata.shape[0]))).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
+train_dataset = tf.data.Dataset.from_tensor_slices((np.arange(traindata.shape[0]).reshape(-1, 1), np.arange(traindata.shape[0]).reshape(-1, 1))).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
 test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
 
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
@@ -281,25 +281,25 @@ with strategy.scope():
 
 
 
-def train_step():
+def train_step(dummy):
     n = args.sims_in_loop
     if len(rim.trainable_variables) == 0:
         idx = np.random.randint(0, traindata.shape[0], 1)
         xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
         x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-        a, b, c = x_init, yy,  xx
+        a, b, c = tf.constant(x_init), tf.constant(yy),  tf.constant(xx)
         _s =  rim(a, b, grad_fn, c, grad_params)[1]
-        print("First rim call in trainstep : "i, a.shape, b.shape, c.shape)
+        print("First rim call in trainstep : ", a.shape, b.shape, c.shape)
         
     gradients = [0.]*len(rim.trainable_variables)
     getgrads = True
     #print(len(gradients))
     for i in range(args.batch_size//n):
         idx = np.random.randint(0, traindata.shape[0], n)
-        print("%d traindata samples : "%i,, idx)
+        print("%d traindata samples : "%i, idx)
         xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
         x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-        a, b, c = x_init, yy,  xx
+        a, b, c = tf.constant(x_init), tf.constant(yy),  tf.constant(xx)
         if a.shape[0] > 0:
             with tf.GradientTape() as tape:
                 loss =  rim(a, b, grad_fn, c, grad_params)[1]
@@ -374,9 +374,9 @@ for epoch in range(EPOCHS):
     num_batches = 0
     starte = time.time()
     for x in train_dist_dataset:
-        print(len(x), x[0].values[0].shape)
+        print("sample fron train dist dataset : ", len(x), x[0].values[0].shape)
         startb = time.time()
-        loss = distributed_train_step()
+        loss = distributed_train_step(x)
         losses.append(loss.numpy())
         total_loss += loss
         print("epoch %d, num batch %d, loss : "%(epoch, num_batches), loss)
