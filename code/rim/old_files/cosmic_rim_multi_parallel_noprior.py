@@ -4,13 +4,6 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
-physical_devices = tf.config.experimental.list_physical_devices('GPU')
-print("\nphysical_devices\n", physical_devices)
-assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
-for device in physical_devices:
-    config = tf.config.experimental.set_memory_growth(device, True)
-
-
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
@@ -18,7 +11,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel, build_rim_split, myAdam
+from rim_utils import build_rim_parallel, build_rim, myAdam
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
@@ -27,7 +20,7 @@ import tools
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 world_size = len(gpus)
-print("\nworld size : ",world_size)
+print("\n ", world_size, "\n")
 for gpu in gpus:
     print("Name:", gpu.name, "  Type:", gpu.device_type)
 
@@ -59,7 +52,6 @@ parser.add_argument('--rim_iter', type=int, default=10, help='Optimization itera
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
 
 
 
@@ -131,9 +123,7 @@ def get_ps(iterand, truth):
     
 def get_data(nsims=args.nsims):
     if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    else: dpath = '../../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
-    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
     print(dpath)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
@@ -143,7 +133,7 @@ def get_data(nsims=args.nsims):
 @tf.function()
 def pm_data(dummy):
     print("PM graph")
-    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=(args.batch_size * world_size))
+    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=args.batch_size)
     if args.nbody:
         print('Nobdy sim')
         state = lpt_init(linear, a0=a0, order=args.lpt_order)
@@ -196,40 +186,42 @@ def recon_dm(linear, data):
 #     chisq = tf.multiply(chisq, 1/nc**3, name='chisq')
 
     #Prior
-    lineark = r2c3d(linear, norm=nc**3)
-    priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
+    #lineark = r2c3d(linear, norm=nc**3)
+    #priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
+    #prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
 #     prior = tf.multiply(prior, 1/nc**3, name='prior')
     #                                                                                                                                                     
-    loss = chisq + prior
+    loss = chisq #+ prior
 
-    return loss, chisq, prior
+    return loss
 
 
 @tf.function
 def recon_dm_grad(x, y):
     with tf.GradientTape() as tape:
         tape.watch(x)
-        loss = recon_dm(x, y)[0]
+        loss = recon_dm(x, y)
     grad = tape.gradient(loss, x)
     return grad
 
 
+#strategy = tf.distribute.MirroredStrategy(devices=["/device:GPU:0", "/device:GPU:1"])
 strategy = tf.distribute.MirroredStrategy()
-print ('\nNumber of devices: {}'.format(strategy.num_replicas_in_sync))
+print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-##traindata, testdata = get_data()
-##print(traindata.shape, testdata.shape)
-##
-##BUFFER_SIZE = len(traindata)
-##BATCH_SIZE_PER_REPLICA = params['batch_size']
-##GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
-##EPOCHS = params['epoch']
-##train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-##test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
-##
+#traindata, testdata = get_data()
+#print(traindata.shape, testdata.shape)
+
+#BUFFER_SIZE = len(traindata)
+BATCH_SIZE_PER_REPLICA = params['batch_size']
+GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
+EPOCHS = params['epoch']
+#train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
+#test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
+
 train_dataset = tf.data.Dataset.range(args.batch_in_epoch)
 train_dataset = train_dataset.map(pm_data)
+# dset = dset.apply(tf.data.experimental.unbatch())
 train_dataset = train_dataset.prefetch(-1)
 test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
 
@@ -243,8 +235,9 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 
 with strategy.scope():
 
-    if args.parallel:  rim = build_rim_parallel(params)
-    else :  rim = build_rim_split(params)
+    #rim = (params)
+    #rim = build_rim(params)
+    rim = build_rim_parallel(params)
     grad_fn = recon_dm_grad
 
     def get_opt(lr):
@@ -293,28 +286,35 @@ def distributed_test_step(dataset_inputs):
 
 losses = []    
 
+for x in test_dist_dataset:
+    a, b, c, d = distributed_test_step(x)
+    #a, b, c, d = a.values[0], b.values[0], c.values[0], d.values[0]
+    #test_callback(a.numpy()[-1], b.numpy(), c.numpy(), d.numpy(), suff="-init", pref='models/L%04d_N%03d_T%02d/'%(bs, nc, nsteps))
+    break
+
 
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
-if args.parallel:  suffpath = '_parallel' + args.suffix
-else:  suffpath = '_split' + args.suffix
-
+suffpath = '_noprior_parallel' + args.suffix
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
 except Exception as e: print(e)
 print("\nOutput folder : ", ofolder, "\n")
 
-for epoch in range(args.epochs):
+for epoch in range(EPOCHS):
     print("\nFor epoch %d\n"%epoch)
     #TRAIN LOOP
     total_loss = 0.0
     num_batches = 0
     starte = time.time()
     for x in train_dist_dataset:
-        #print(num_batches)
-        print(len(x), x[0].values[0].shape)
+        print(num_batches)
+        try: print(len(x), x[0].values[0].shape)
+        except Exception as e: 
+            print(e)
+            print(x)
         startb = time.time()
         loss = distributed_train_step(x)
         losses.append(loss.numpy())
@@ -331,12 +331,7 @@ for epoch in range(args.epochs):
     ##Test Epoch Training
     for x in test_dist_dataset:
         a, b, c, d = distributed_test_step(x)
-        try: pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
-        except Exception as e:
-            print(e)
-            pred = a.numpy()
-            print(pred)
-            #pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
+        pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
         print(pred.shape, x_init.shape, xx.shape, yy.shape)
         pred = pred[-1]
         pred_adam = adam(x_init, yy, grad_fn)

@@ -8,6 +8,7 @@ physical_devices = tf.config.experimental.list_physical_devices('GPU')
 print(physical_devices)
 assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
 config = tf.config.experimental.set_memory_growth(physical_devices[0], True)
+import tensorflow_probability as tfp
 
 
 import numpy as np
@@ -17,8 +18,8 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel, myAdam, build_rim_split
-from recon_models import Recon_DM
+from rim_utils import build_rim_parallel, build_rim_split, myAdam
+from recon_models import Recon_Poisson
 
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
@@ -45,19 +46,19 @@ parser.add_argument('--nc', type=int, default=16, help='Grid size')
 parser.add_argument('--bs', type=float, default=100, help='Box Size')
 parser.add_argument('--nsteps', type=int, default=3, help='')
 parser.add_argument('--niter', type=int, default=200, help='Number of iterations/Max iterations')
-parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
 parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
 parser.add_argument('--nsims', type=int, default=100, help='Number of simulations')
 parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simulationss')
 parser.add_argument('--lpt_order', type=int, default=1, help='Order of LPT Initial conditions')
-parser.add_argument('--input_size', type=int, default=8, help='Input layer channel size')
-parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
+parser.add_argument('--input_size', type=int, default=16, help='Input layer channel size')
+parser.add_argument('--cell_size', type=int, default=16, help='Cell channel size')
 parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
+parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
 
 
 
@@ -72,6 +73,7 @@ a0, af, nsteps = 0.1, 1.0,  args.nsteps
 stages = np.linspace(a0, af, nsteps, endpoint=True)
 #anneal = True
 #RRs = [2, 1, 0.5, 0]
+plambda = args.plambda
 
 #
 klin = np.loadtxt('../../data/Planck15_a1p00.txt').T[0]
@@ -95,19 +97,18 @@ params['input_kernel_size'] = 5
 params['middle_kernel_size'] = 5
 params['output_kernel_size'] = 5
 params['rim_iter'] = args.rim_iter
-params['input_activation'] = 'linear'
+params['input_activation'] = 'tanh'
 params['output_activation'] = 'linear'
 params['nc'] = nc
 
 
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
-fid_recon = Recon_DM(nc, bs, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
+fid_recon = Recon_Poisson(nc, bs, plambda=plambda, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
 
-if args.parallel: suffpath = '_parallel' + args.suffix
-else: suffpath = '_split' + args.suffix
-if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
+suffpath = '_p%03d_parallel'%(100*plambda) + args.suffix
+if args.nbody: ofolder = './models/poisson_L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
+else: ofolder = './models/poisson_L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
 except Exception as e: print(e)
 
@@ -115,10 +116,10 @@ except Exception as e: print(e)
 
 
 def get_data(nsims=args.nsims):
-    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
-    if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    else: dpath = '../../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
+    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
+    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+    if args.nbody: dpath = '../../data/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
+    else: dpath = '../../data/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
@@ -152,6 +153,7 @@ def pm_data_test(dummy):
     return linear, tfinal_field
 
 
+
 @tf.function
 def pm(linear):
     if args.nbody:
@@ -164,30 +166,39 @@ def pm(linear):
     tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
     return tfinal_field
 
+@tf.function
+def gal_sample(base):
+    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
+    return galmean.sample()
 
 
 @tf.function
-def recon_dm(linear, data):
-
+def recon(linear, data):
+    """                                                                                                                                                   
+    """
     print('new graph')
-    final_field = pm(linear)
-    residual = final_field - data #.astype(np.float32)
-    chisq = tf.multiply(residual, residual)
-    chisq = tf.reduce_mean(chisq)                             
-    return chisq, chisq
-    
-    #lineark = r2c3d(linear, norm=nc**3)
-    #priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    #prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
-    #loss = chisq + prior
-    #return loss, chisq, prior
+    base = pm(linear)
+
+    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
+    logprob = -tf.reduce_mean(galmean.log_prob(data))
+    #logprob = tf.multiply(logprob, 1/nc**3, name='logprob')
+
+    #Prior
+    lineark = r2c3d(linear, norm=nc**3)
+    priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
+    prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
+#     prior = tf.multiply(prior, 1/nc**3, name='prior')
+    #                                                                                                                                                     
+    loss = logprob + prior
+
+    return loss, logprob, prior
 
 
 @tf.function
-def recon_dm_grad(x, y):
+def recon_grad(x, y):
     with tf.GradientTape() as tape:
         tape.watch(x)
-        loss = recon_dm(x, y)[0]
+        loss = recon(x, y)[0]
     grad = tape.gradient(loss, x)
     return grad
 
@@ -213,11 +224,11 @@ def check_2pt(xx, yy, rim, grad_fn, compares, nrim=10, fname=None):
     truemesh = [xx[0], yy[0]]
     rimpreds = []
     for it in range(nrim):
-        x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0]).numpy()
-        #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+        x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
         #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
         pred = rim(tf.constant(x_init), tf.constant(yy), grad_fn)[-1]
-        rimpreds.append([pred[0].numpy(), pm(pred)[0].numpy()])
+        #rimpreds.append([pred[0].numpy(), pm(pred)[0].numpy()])
+        rimpreds.append([pred[0].numpy(), gal_sample(pm(pred))[0].numpy()])
 
     fig, ax = plt.subplots(1, 2, figsize=(9, 4), sharex=True)
     for ip, preds in enumerate(rimpreds):
@@ -265,9 +276,8 @@ def main():
     Model function for the CosmicRIM.
     """
 
-    if args.parallel:     rim = build_rim_parallel(params)
-    else: rim = build_rim_split(params)
-    grad_fn = recon_dm_grad
+    rim = build_rim_parallel(params)
+    grad_fn = recon_grad
     #
 
 #
@@ -279,9 +289,8 @@ def main():
 #
     traindata, testdata = get_data()
     idx = np.random.randint(0, traindata.shape[0], 1)
-    xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
-    x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0])
-    #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+    xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, -1].astype(np.float32), 
+    x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
     x_pred = rim(x_init, yy, grad_fn)
 
     
@@ -301,23 +310,23 @@ def main():
     ##Train and save
     piter, testiter  = 10, 50
     losses = []
-    lrs = [ 0.0001, 0.0001]
-    liters = [ 1001, 2001]
+    lrs = [0.001, 0.0005, 0.0001]
+    liters = [201, 1001, 1001]
     trainiter = 0 
     start = time.time()
     x_test, y_test = None, None
 
-    for il in range(len(lrs)):
+    for il in range(3):
         print('Learning rate = %0.3e'%lrs[il])
         opt = tf.keras.optimizers.Adam(learning_rate=lrs[il])
 
         for i in range(liters[il]):
             idx = np.random.randint(0, traindata.shape[0], args.batch_size)
-            xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
-            x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0]).numpy()
-            #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+            xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, -1].astype(np.float32), 
+            x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
             #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
             
+
             loss, gradients = rim_train(x_true=tf.constant(xx), 
                                     x_init=tf.constant(x_init), 
                                     y=tf.constant(yy))
@@ -339,8 +348,7 @@ def main():
                 #xx, yy = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
                 if x_test is None:
                     idx = np.random.randint(0, testdata.shape[0], 1)
-                    x_test, y_test = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
-                    x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=x_test.shape[0]).numpy()
+                    x_test, y_test = testdata[idx, 0].astype(np.float32), testdata[idx, -1].astype(np.float32), 
                     pred_adam = adam(tf.constant(x_init), tf.constant(y_test), grad_fn)
                     pred_adam = [pred_adam[0].numpy(), pm(pred_adam)[0].numpy()]
                     pred_adam10 = adam10(tf.constant(x_init), tf.constant(y_test), grad_fn)
@@ -349,11 +357,11 @@ def main():
                     compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
                     print('Test set generated')
 
-                #x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
-                x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=x_test.shape[0]).numpy()
+                x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
                 #x_init = (y_test - (y_test.max() - y_test.min())/2.)/y_test.std() + np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
                 pred = rim(tf.constant(x_init), tf.constant(y_test), grad_fn)[-1]
                 check_im(x_test[0], x_init[0], pred.numpy()[0], fname=ofolder + 'rim-im-%04d.png'%trainiter)
+                check_im(y_test[0], x_init[0], gal_sample(pm(pred)).numpy()[0], fname=ofolder + 'rim-fin-%04d.png'%trainiter)
                 check_2pt(x_test, y_test, rim, grad_fn, compares, fname=ofolder + 'rim-2pt-%04d.png'%trainiter)
 
                 rim.save_weights(ofolder + '/%d'%trainiter)

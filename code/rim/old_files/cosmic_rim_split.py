@@ -9,7 +9,6 @@ print(physical_devices)
 assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
 config = tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
-
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
@@ -17,7 +16,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel, myAdam, build_rim_split
+from rim_utils import build_rim_split, myAdam
 from recon_models import Recon_DM
 
 import flowpm
@@ -25,6 +24,8 @@ from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
 sys.path.append('../../utils/')
 import tools
+
+
 
 
 
@@ -57,7 +58,7 @@ parser.add_argument('--rim_iter', type=int, default=10, help='Optimization itera
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
+parser.add_argument('--prior', type=bool, default=True, help='Use prior')
 
 
 
@@ -95,7 +96,7 @@ params['input_kernel_size'] = 5
 params['middle_kernel_size'] = 5
 params['output_kernel_size'] = 5
 params['rim_iter'] = args.rim_iter
-params['input_activation'] = 'linear'
+params['input_activation'] = 'tanh'
 params['output_activation'] = 'linear'
 params['nc'] = nc
 
@@ -104,8 +105,8 @@ adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 fid_recon = Recon_DM(nc, bs, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
 
-if args.parallel: suffpath = '_parallel' + args.suffix
-else: suffpath = '_split' + args.suffix
+suffpath = '_split' + args.suffix
+
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
@@ -123,33 +124,6 @@ def get_data(nsims=args.nsims):
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
 
-@tf.function()
-def pm_data(dummy):
-    print("PM graph")
-    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=args.batch_size)
-    if args.nbody:
-        print('Nobdy sim')
-        state = lpt_init(linear, a0=a0, order=args.lpt_order)
-        final_state = nbody(state,  stages, nc)
-    else:
-        print('ZA/2LPT sim')
-        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
-    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
-    return linear, tfinal_field
-
-@tf.function()
-def pm_data_test(dummy):
-    print("PM graph")
-    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=world_size)
-    if args.nbody:
-        print('Nobdy sim')
-        state = lpt_init(linear, a0=a0, order=args.lpt_order)
-        final_state = nbody(state,  stages, nc)
-    else:
-        print('ZA/2LPT sim')
-        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
-    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
-    return linear, tfinal_field
 
 
 @tf.function
@@ -174,13 +148,15 @@ def recon_dm(linear, data):
     residual = final_field - data #.astype(np.float32)
     chisq = tf.multiply(residual, residual)
     chisq = tf.reduce_mean(chisq)                             
-    return chisq, chisq
-    
-    #lineark = r2c3d(linear, norm=nc**3)
-    #priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    #prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
-    #loss = chisq + prior
-    #return loss, chisq, prior
+    if args.prior:
+        lineark = r2c3d(linear, norm=nc**3)
+        priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
+        prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
+        loss = chisq + prior
+        return loss, chisq, prior
+    else: 
+        loss = chisq
+        return loss, chisq
 
 
 @tf.function
@@ -190,6 +166,10 @@ def recon_dm_grad(x, y):
         loss = recon_dm(x, y)[0]
     grad = tape.gradient(loss, x)
     return grad
+
+
+
+
 
 
 
@@ -213,8 +193,7 @@ def check_2pt(xx, yy, rim, grad_fn, compares, nrim=10, fname=None):
     truemesh = [xx[0], yy[0]]
     rimpreds = []
     for it in range(nrim):
-        x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0]).numpy()
-        #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+        x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
         #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
         pred = rim(tf.constant(x_init), tf.constant(yy), grad_fn)[-1]
         rimpreds.append([pred[0].numpy(), pm(pred)[0].numpy()])
@@ -265,23 +244,13 @@ def main():
     Model function for the CosmicRIM.
     """
 
-    if args.parallel:     rim = build_rim_parallel(params)
-    else: rim = build_rim_split(params)
+    rim = build_rim_split(params)
     grad_fn = recon_dm_grad
     #
-
-#
-#    train_dataset = tf.data.Dataset.range(args.batch_in_epoch)
-#    train_dataset = train_dataset.map(pm_data)
-#    # dset = dset.apply(tf.data.experimental.unbatch())
-#    train_dataset = train_dataset.prefetch(-1)
-#    test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
-#
     traindata, testdata = get_data()
     idx = np.random.randint(0, traindata.shape[0], 1)
     xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
-    x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0])
-    #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+    x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
     x_pred = rim(x_init, yy, grad_fn)
 
     
@@ -301,23 +270,23 @@ def main():
     ##Train and save
     piter, testiter  = 10, 50
     losses = []
-    lrs = [ 0.0001, 0.0001]
-    liters = [ 1001, 2001]
+    lrs = [0.001, 0.0005, 0.0001]
+    liters = [201, 1001, 1001]
     trainiter = 0 
     start = time.time()
     x_test, y_test = None, None
 
-    for il in range(len(lrs)):
+    for il in range(3):
         print('Learning rate = %0.3e'%lrs[il])
         opt = tf.keras.optimizers.Adam(learning_rate=lrs[il])
 
         for i in range(liters[il]):
             idx = np.random.randint(0, traindata.shape[0], args.batch_size)
             xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
-            x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=xx.shape[0]).numpy()
-            #x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+            x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
             #x_init = (yy - (yy.max() - yy.min())/2.)/yy.std() + np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
             
+
             loss, gradients = rim_train(x_true=tf.constant(xx), 
                                     x_init=tf.constant(x_init), 
                                     y=tf.constant(yy))
@@ -340,7 +309,6 @@ def main():
                 if x_test is None:
                     idx = np.random.randint(0, testdata.shape[0], 1)
                     x_test, y_test = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
-                    x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=x_test.shape[0]).numpy()
                     pred_adam = adam(tf.constant(x_init), tf.constant(y_test), grad_fn)
                     pred_adam = [pred_adam[0].numpy(), pm(pred_adam)[0].numpy()]
                     pred_adam10 = adam10(tf.constant(x_init), tf.constant(y_test), grad_fn)
@@ -349,8 +317,7 @@ def main():
                     compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
                     print('Test set generated')
 
-                #x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
-                x_init = flowpm.linear_field(nc, bs, ipklin, batch_size=x_test.shape[0]).numpy()
+                x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
                 #x_init = (y_test - (y_test.max() - y_test.min())/2.)/y_test.std() + np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
                 pred = rim(tf.constant(x_init), tf.constant(y_test), grad_fn)[-1]
                 check_im(x_test[0], x_init[0], pred.numpy()[0], fname=ofolder + 'rim-im-%04d.png'%trainiter)

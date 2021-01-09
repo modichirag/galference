@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel, build_rim_split, myAdam
+from rim_utils import build_rim_split, build_rim, myAdam
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
@@ -59,7 +59,6 @@ parser.add_argument('--rim_iter', type=int, default=10, help='Optimization itera
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
 
 
 
@@ -216,7 +215,8 @@ def recon_dm_grad(x, y):
 
 
 strategy = tf.distribute.MirroredStrategy()
-print ('\nNumber of devices: {}'.format(strategy.num_replicas_in_sync))
+print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
+
 
 ##traindata, testdata = get_data()
 ##print(traindata.shape, testdata.shape)
@@ -233,6 +233,7 @@ train_dataset = train_dataset.map(pm_data)
 train_dataset = train_dataset.prefetch(-1)
 test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
 
+
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
 test_dist_dataset = strategy.experimental_distribute_dataset(test_dataset)
 
@@ -243,8 +244,7 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 
 with strategy.scope():
 
-    if args.parallel:  rim = build_rim_parallel(params)
-    else :  rim = build_rim_split(params)
+    rim = build_rim_split(params)
     grad_fn = recon_dm_grad
 
     def get_opt(lr):
@@ -297,9 +297,7 @@ losses = []
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
-if args.parallel:  suffpath = '_parallel' + args.suffix
-else:  suffpath = '_split' + args.suffix
-
+suffpath = '_split' + args.suffix
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
@@ -313,8 +311,8 @@ for epoch in range(args.epochs):
     num_batches = 0
     starte = time.time()
     for x in train_dist_dataset:
-        #print(num_batches)
-        print(len(x), x[0].values[0].shape)
+        print(num_batches)
+        #print(len(x), x[0].values[0].shape)
         startb = time.time()
         loss = distributed_train_step(x)
         losses.append(loss.numpy())

@@ -21,6 +21,8 @@ import tools
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     print("Name:", gpu.name, "  Type:", gpu.device_type)
+world_size = len(gpus)
+
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -48,6 +50,8 @@ parser.add_argument('--input_size', type=int, default=8, help='Input layer chann
 parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
 parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
+parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
+parser.add_argument('--suffix', type=str, default='', help='Number of epochs')
 
 
 args = parser.parse_args()
@@ -83,6 +87,8 @@ params['rim_iter'] = args.rim_iter
 params['nc'] = nc
 params['batch_size'] = args.batch_size
 params['epoch'] = args.epochs
+params['input_activation'] = 'tanh'
+params['output_activation'] = 'linear'
 
 
 
@@ -117,6 +123,34 @@ def get_data(nsims=args.nsims):
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
     
+
+@tf.function()
+def pm_data(dummy):
+    print("PM graph")
+    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=args.batch_size)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
+    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
+    return linear, tfinal_field
+
+@tf.function()
+def pm_data_test(dummy):
+    print("PM graph")
+    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=world_size)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
+    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
+    return linear, tfinal_field
 
 @tf.function
 def pm(linear):
@@ -168,15 +202,20 @@ def recon_dm_grad(x, y):
 strategy = tf.distribute.MirroredStrategy()
 print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-traindata, testdata = get_data()
-print(traindata.shape, testdata.shape)
+#traindata, testdata = get_data()
+#print(traindata.shape, testdata.shape)
 
-BUFFER_SIZE = len(traindata)
+#BUFFER_SIZE = len(traindata)
 BATCH_SIZE_PER_REPLICA = params['batch_size']
 GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
 EPOCHS = params['epoch']
-train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
+#train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
+#test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
+
+train_dataset = tf.data.Dataset.range(args.batch_in_epoch)
+train_dataset = train_dataset.map(pm_data)
+train_dataset = train_dataset.prefetch(-1)
+test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
 
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
 test_dist_dataset = strategy.experimental_distribute_dataset(test_dataset)
@@ -234,8 +273,6 @@ def distributed_test_step(dataset_inputs):
 
 ##
 
-try: os.makedirs('models/L%04d_N%03d_T%02d/'%(bs, nc, nsteps))
-except Exception as e: print(e)
 
 losses = []    
 
@@ -249,7 +286,7 @@ for x in test_dist_dataset:
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
-suffpath = ''
+suffpath = '' + args.suffix
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)

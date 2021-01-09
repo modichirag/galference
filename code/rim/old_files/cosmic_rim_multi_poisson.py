@@ -10,7 +10,7 @@ assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
 for device in physical_devices:
     config = tf.config.experimental.set_memory_growth(device, True)
 
-
+import tensorflow_probability as tfp
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel, build_rim_split, myAdam
+from rim_utils import build_rim, myAdam
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
@@ -26,8 +26,6 @@ sys.path.append('../../utils/')
 import tools
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
-world_size = len(gpus)
-print("\nworld size : ",world_size)
 for gpu in gpus:
     print("Name:", gpu.name, "  Type:", gpu.device_type)
 
@@ -47,7 +45,7 @@ parser.add_argument('--nc', type=int, default=16, help='Grid size')
 parser.add_argument('--bs', type=float, default=100, help='Box Size')
 parser.add_argument('--nsteps', type=int, default=3, help='')
 parser.add_argument('--niter', type=int, default=200, help='Number of iterations/Max iterations')
-parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate')
+parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
 parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
 parser.add_argument('--nsims', type=int, default=100, help='Batch size')
@@ -55,12 +53,11 @@ parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simu
 parser.add_argument('--lpt_order', type=int, default=1, help='Order of LPT Initial conditions')
 parser.add_argument('--input_size', type=int, default=16, help='Input layer channel size')
 parser.add_argument('--cell_size', type=int, default=16, help='Cell channel size')
-parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
+parser.add_argument('--rim_iter', type=int, default=10, 0help='Optimization iteration')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
+parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
-
 
 
 args = parser.parse_args()
@@ -72,6 +69,7 @@ optimizer = args.optimizer
 lr = args.lr
 a0, af, nsteps = 0.1, 1.0,  args.nsteps
 stages = np.linspace(a0, af, nsteps, endpoint=True)
+plambda = args.plambda
 #anneal = True
 #RRs = [2, 1, 0.5, 0]
 
@@ -80,28 +78,24 @@ klin = np.loadtxt('../../data/Planck15_a1p00.txt').T[0]
 plin = np.loadtxt('../../data//Planck15_a1p00.txt').T[1]
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels                                                                                                                          
-kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=bs, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
 
-#RIM params
+#RIM Params
 params = {}
 params['input_size'] = args.input_size
 params['cell_size'] = args.cell_size
-params['strides'] = 2
-params['middle_size'] = args.input_size // params['strides']  #lets divide by strides
 params['cell_kernel_size'] = 5
 params['input_kernel_size'] = 5
-params['middle_kernel_size'] = 5
 params['output_kernel_size'] = 5
-params['rim_iter'] = args.rim_iter
 params['input_activation'] = 'tanh'
 params['output_activation'] = 'linear'
+params['rim_iter'] = args.rim_iter
 params['nc'] = nc
 params['batch_size'] = args.batch_size
 params['epoch'] = args.epochs
-
 
 
 
@@ -130,43 +124,13 @@ def get_ps(iterand, truth):
 
     
 def get_data(nsims=args.nsims):
-    if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    else: dpath = '../../data/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
-    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
-    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
-    print(dpath)
+    #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
+    #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+    if args.nbody: dpath = '../../data/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
+    else: dpath = '../../data/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
-    
-
-@tf.function()
-def pm_data(dummy):
-    print("PM graph")
-    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=(args.batch_size * world_size))
-    if args.nbody:
-        print('Nobdy sim')
-        state = lpt_init(linear, a0=a0, order=args.lpt_order)
-        final_state = nbody(state,  stages, nc)
-    else:
-        print('ZA/2LPT sim')
-        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
-    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
-    return linear, tfinal_field
-
-@tf.function()
-def pm_data_test(dummy):
-    print("PM graph")
-    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=world_size)
-    if args.nbody:
-        print('Nobdy sim')
-        state = lpt_init(linear, a0=a0, order=args.lpt_order)
-        final_state = nbody(state,  stages, nc)
-    else:
-        print('ZA/2LPT sim')
-        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
-    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
-    return linear, tfinal_field
 
 
 @tf.function
@@ -182,56 +146,56 @@ def pm(linear):
     return tfinal_field
 
 
+@tf.function
+def gal_sample(base):
+    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
+    return galmean.sample()
+
 
 @tf.function
-def recon_dm(linear, data):
+def recon(linear, data):
     """                                                                                                                                                   
     """
     print('new graph')
-    final_field = pm(linear)
-    residual = final_field - data
+    base = pm(linear)
 
-    chisq = tf.multiply(residual, residual)
-    chisq = tf.reduce_mean(chisq)
-#     chisq = tf.multiply(chisq, 1/nc**3, name='chisq')
+    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
+    logprob = -tf.reduce_mean(galmean.log_prob(data))
+    #logprob = tf.multiply(logprob, 1/nc**3, name='logprob')
 
     #Prior
     lineark = r2c3d(linear, norm=nc**3)
     priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
     prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
 #     prior = tf.multiply(prior, 1/nc**3, name='prior')
-    #                                                                                                                                                     
-    loss = chisq + prior
+    #                                                                                        
+    loss = logprob + prior
 
-    return loss, chisq, prior
+    return loss, logprob, prior
 
 
 @tf.function
-def recon_dm_grad(x, y):
+def recon_grad(x, y):
     with tf.GradientTape() as tape:
         tape.watch(x)
-        loss = recon_dm(x, y)[0]
+        loss = recon(x, y)[0]
     grad = tape.gradient(loss, x)
     return grad
 
 
+#strategy = tf.distribute.MirroredStrategy(devices=["/device:GPU:0", "/device:GPU:1"])
 strategy = tf.distribute.MirroredStrategy()
-print ('\nNumber of devices: {}'.format(strategy.num_replicas_in_sync))
+print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-##traindata, testdata = get_data()
-##print(traindata.shape, testdata.shape)
-##
-##BUFFER_SIZE = len(traindata)
-##BATCH_SIZE_PER_REPLICA = params['batch_size']
-##GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
-##EPOCHS = params['epoch']
-##train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-##test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
-##
-train_dataset = tf.data.Dataset.range(args.batch_in_epoch)
-train_dataset = train_dataset.map(pm_data)
-train_dataset = train_dataset.prefetch(-1)
-test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
+traindata, testdata = get_data()
+print(traindata.shape, testdata.shape)
+
+BUFFER_SIZE = len(traindata)
+BATCH_SIZE_PER_REPLICA = params['batch_size']
+GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
+EPOCHS = params['epoch']
+train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 2])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
+test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 2])).batch(strategy.num_replicas_in_sync) 
 
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
 test_dist_dataset = strategy.experimental_distribute_dataset(test_dataset)
@@ -242,10 +206,8 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 
 
 with strategy.scope():
-
-    if args.parallel:  rim = build_rim_parallel(params)
-    else :  rim = build_rim_split(params)
-    grad_fn = recon_dm_grad
+    rim = build_rim(params)
+    grad_fn = recon_grad
 
     def get_opt(lr):
         return  tf.keras.optimizers.Adam(learning_rate=lr)
@@ -259,7 +221,7 @@ def train_step(inputs):
     x_true, y = inputs
     x_init = tf.random.normal(x_true.shape)
     with tf.GradientTape() as tape:
-        x_pred = rim(x_init, y, grad_fn)
+        x_pred, states = rim(x_init, y, grad_fn)
         res  = (x_true - x_pred)
         loss = tf.reduce_mean(tf.square(res)) ##This is not advised, come back to this
     gradients = tape.gradient(loss, rim.trainable_variables)
@@ -271,7 +233,7 @@ def train_step(inputs):
 def test_step(inputs):
     x_true, y = inputs
     x_init = tf.random.normal(x_true.shape)
-    x_pred = rim(x_init, y, grad_fn)
+    x_pred, _ = rim(x_init, y, grad_fn)
     return x_pred, x_init, x_true, y
 
 
@@ -289,7 +251,9 @@ def distributed_test_step(dataset_inputs):
     return strategy.run(test_step, args=(dataset_inputs,))
 
 
-##
+###
+#Training
+
 
 losses = []    
 
@@ -297,24 +261,20 @@ losses = []
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
-if args.parallel:  suffpath = '_parallel' + args.suffix
-else:  suffpath = '_split' + args.suffix
-
-if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
+suffpath = '_p%03d'%(plambda*100) + args.suffix
+if args.nbody: ofolder = './models/poisson_L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
+else: ofolder = './models/poisson_L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
 except Exception as e: print(e)
-print("\nOutput folder : ", ofolder, "\n")
 
-for epoch in range(args.epochs):
+
+for epoch in range(EPOCHS):
     print("\nFor epoch %d\n"%epoch)
     #TRAIN LOOP
     total_loss = 0.0
     num_batches = 0
     starte = time.time()
     for x in train_dist_dataset:
-        #print(num_batches)
-        print(len(x), x[0].values[0].shape)
         startb = time.time()
         loss = distributed_train_step(x)
         losses.append(loss.numpy())
@@ -331,13 +291,7 @@ for epoch in range(args.epochs):
     ##Test Epoch Training
     for x in test_dist_dataset:
         a, b, c, d = distributed_test_step(x)
-        try: pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
-        except Exception as e:
-            print(e)
-            pred = a.numpy()
-            print(pred)
-            #pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
-        print(pred.shape, x_init.shape, xx.shape, yy.shape)
+        pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
         pred = pred[-1]
         pred_adam = adam(x_init, yy, grad_fn)
         pred_adam10 = adam10(x_init, yy, grad_fn)
@@ -355,23 +309,23 @@ for epoch in range(args.epochs):
 
         ##
         fig, ax = plt.subplots(1, 2, figsize=(9, 4))
-        #print(x_init.shape, xx.shape, yy.shape, pred.shape, pred_adam.shape, pred_adam10.shape)
-        k, pks = get_ps([x_init.numpy(), pm(x_init).numpy()], [xx.numpy(), yy.numpy()])
+        print(x_init.shape, xx.shape, yy.shape, pred.shape, pred_adam.shape, pred_adam10.shape)
+        k, pks = get_ps([x_init.numpy(), gal_sample(pm(x_init)).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d--'%i, lw=0.5)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d--'%i, lw=0.5)
 
-        k, pks = get_ps([pred.numpy(), pm(pred).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred.numpy(), gal_sample(pm(pred)).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d'%i)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d'%i)
 
-        k, pks = get_ps([pred_adam.numpy(), pm(pred_adam).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred_adam.numpy(), gal_sample(pm(pred_adam)).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d-.'%i, lw=0.5)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d-.'%i, lw=0.5)
 
-        k, pks = get_ps([pred_adam10.numpy(), pm(pred_adam10).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred_adam10.numpy(), gal_sample(pm(pred_adam10)).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d:'%i)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d:'%i)
@@ -379,14 +333,12 @@ for epoch in range(args.epochs):
         for axis in ax: 
             axis.semilogx()
             axis.grid(which='both')
-        ax[0].set_ylim(-0.1, 1.1)
-        ax[1].set_ylim(-0.5, 2.1)
         plt.savefig(ofolder + 'rim-2pt-%d.png'%epoch)
         plt.close()
 
         break
 
-    rim.save_weights(ofolder + '/%d'%epoch)
+    rim.save_weights(ofolder + '/%d.png'%epoch)
     
     
 

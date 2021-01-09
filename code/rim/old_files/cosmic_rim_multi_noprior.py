@@ -4,7 +4,6 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
-import tensorflow_probability as tfp
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
@@ -22,6 +21,8 @@ import tools
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     print("Name:", gpu.name, "  Type:", gpu.device_type)
+world_size = len(gpus)
+
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -49,7 +50,8 @@ parser.add_argument('--input_size', type=int, default=8, help='Input layer chann
 parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
 parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
-parser.add_argument('--plambda', type=float, default=0.10, help='Poisson probability')
+parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
+parser.add_argument('--suffix', type=str, default='', help='Number of epochs')
 
 
 args = parser.parse_args()
@@ -61,7 +63,6 @@ optimizer = args.optimizer
 lr = args.lr
 a0, af, nsteps = 0.1, 1.0,  args.nsteps
 stages = np.linspace(a0, af, nsteps, endpoint=True)
-plambda = args.plambda
 #anneal = True
 #RRs = [2, 1, 0.5, 0]
 
@@ -70,7 +71,7 @@ klin = np.loadtxt('../../data/Planck15_a1p00.txt').T[0]
 plin = np.loadtxt('../../data//Planck15_a1p00.txt').T[1]
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels                                                                                                                          
-kvec = tools.fftk((nc, nc, nc), boxsize=bs, symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
@@ -86,6 +87,8 @@ params['rim_iter'] = args.rim_iter
 params['nc'] = nc
 params['batch_size'] = args.batch_size
 params['epoch'] = args.epochs
+params['input_activation'] = 'tanh'
+params['output_activation'] = 'linear'
 
 
 
@@ -114,12 +117,40 @@ def get_ps(iterand, truth):
 
     
 def get_data(nsims=args.nsims):
-    if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_T%02d_p%03d/'%(bs, nc, nsteps, plambda*100)
-    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/poisson_L%04d_N%03d_LPT%d_p%03d/'%(bs, nc, args.lpt_order, plambda*100)
+    if args.nbody: dpath = '../../data/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
+    else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
     alldata = np.array([np.load(dpath + '%04d.npy'%i) for i in range(nsims)]).astype(np.float32)
     traindata, testdata = alldata[:int(0.9*nsims)], alldata[int(0.9*nsims):]
     return traindata, testdata
     
+
+@tf.function()
+def pm_data(dummy):
+    print("PM graph")
+    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=args.batch_size)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
+    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
+    return linear, tfinal_field
+
+@tf.function()
+def pm_data_test(dummy):
+    print("PM graph")
+    linear = flowpm.linear_field(nc, bs, ipklin, batch_size=world_size)
+    if args.nbody:
+        print('Nobdy sim')
+        state = lpt_init(linear, a0=a0, order=args.lpt_order)
+        final_state = nbody(state,  stages, nc)
+    else:
+        print('ZA/2LPT sim')
+        final_state = lpt_init(linear, a0=af, order=args.lpt_order)
+    tfinal_field = cic_paint(tf.zeros_like(linear), final_state[0])
+    return linear, tfinal_field
 
 @tf.function
 def pm(linear):
@@ -134,40 +165,35 @@ def pm(linear):
     return tfinal_field
 
 
-@tf.function
-def gal_sample(base):
-    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
-    return galmean.sample()
-
 
 @tf.function
-def recon(linear, data):
+def recon_dm(linear, data):
     """                                                                                                                                                   
     """
     print('new graph')
-    base = pm(linear)
+    final_field = pm(linear)
+    residual = final_field - data
 
-    galmean = tfp.distributions.Poisson(rate = plambda * (1 + base))
-    logprob = -tf.reduce_mean(galmean.log_prob(data))
-    #logprob = tf.multiply(logprob, 1/nc**3, name='logprob')
-
+    chisq = tf.multiply(residual, residual)
+    chisq = tf.reduce_mean(chisq)
+#     chisq = tf.multiply(chisq, 1/nc**3, name='chisq')
 
     #Prior
-    lineark = r2c3d(linear, norm=nc**3)
-    priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
+    #lineark = r2c3d(linear, norm=nc**3)
+    #priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
+    #prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
 #     prior = tf.multiply(prior, 1/nc**3, name='prior')
     #                                                                                                                                                     
-    loss = logprob + prior
+    loss = chisq #+ prior
 
-    return loss, logprob, prior
+    return loss, chisq #, prior
 
 
 @tf.function
-def recon_grad(x, y):
+def recon_dm_grad(x, y):
     with tf.GradientTape() as tape:
         tape.watch(x)
-        loss = recon(x, y)[0]
+        loss = recon_dm(x, y)[0]
     grad = tape.gradient(loss, x)
     return grad
 
@@ -176,15 +202,20 @@ def recon_grad(x, y):
 strategy = tf.distribute.MirroredStrategy()
 print ('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-traindata, testdata = get_data()
-print(traindata.shape, testdata.shape)
+#traindata, testdata = get_data()
+#print(traindata.shape, testdata.shape)
 
-BUFFER_SIZE = len(traindata)
-BATCH_SIZE_PER_REPLICA = params['batch_size']
-GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
 EPOCHS = params['epoch']
-train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 2])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
-test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 2])).batch(strategy.num_replicas_in_sync) 
+#BUFFER_SIZE = len(traindata)
+#BATCH_SIZE_PER_REPLICA = params['batch_size']
+#GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
+#train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
+#test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
+
+train_dataset = tf.data.Dataset.range(args.batch_in_epoch)
+train_dataset = train_dataset.map(pm_data)
+train_dataset = train_dataset.prefetch(-1)
+test_dataset = tf.data.Dataset.range(1).map(pm_data_test).prefetch(-1)
 
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
 test_dist_dataset = strategy.experimental_distribute_dataset(test_dataset)
@@ -196,7 +227,7 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 
 with strategy.scope():
     rim = build_rim(params)
-    grad_fn = recon_grad
+    grad_fn = recon_dm_grad
 
     def get_opt(lr):
         return  tf.keras.optimizers.Adam(learning_rate=lr)
@@ -240,19 +271,24 @@ def distributed_test_step(dataset_inputs):
     return strategy.run(test_step, args=(dataset_inputs,))
 
 
-###
-#Training
+##
 
 
 losses = []    
+
+for x in test_dist_dataset:
+    a, b, c, d = distributed_test_step(x)
+    a, b, c, d = a.values[0], b.values[0], c.values[0], d.values[0]
+    #test_callback(a.numpy()[-1], b.numpy(), c.numpy(), d.numpy(), suff="-init", pref='models/L%04d_N%03d_T%02d/'%(bs, nc, nsteps))
+    break
 
 
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
-suffpath = '_p%03d'%(plambda*100)
-if args.nbody: ofolder = './models/poisson_L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/poisson_L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
+suffpath = '_noprior' + args.suffix
+if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
+else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
 except Exception as e: print(e)
 
@@ -299,22 +335,22 @@ for epoch in range(EPOCHS):
         ##
         fig, ax = plt.subplots(1, 2, figsize=(9, 4))
         print(x_init.shape, xx.shape, yy.shape, pred.shape, pred_adam.shape, pred_adam10.shape)
-        k, pks = get_ps([x_init.numpy(), gal_sample(pm(x_init)).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([x_init.numpy(), pm(x_init).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d--'%i, lw=0.5)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d--'%i, lw=0.5)
 
-        k, pks = get_ps([pred.numpy(), gal_sample(pm(pred)).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred.numpy(), pm(pred).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d'%i)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d'%i)
 
-        k, pks = get_ps([pred_adam.numpy(), gal_sample(pm(pred_adam)).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred_adam.numpy(), pm(pred_adam).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d-.'%i, lw=0.5)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d-.'%i, lw=0.5)
 
-        k, pks = get_ps([pred_adam10.numpy(), gal_sample(pm(pred_adam10)).numpy()], [xx.numpy(), yy.numpy()])
+        k, pks = get_ps([pred_adam10.numpy(), pm(pred_adam10).numpy()], [xx.numpy(), yy.numpy()])
         for i in range(2):
             ax[0].plot(k, pks[i][2]/(pks[i][0]*pks[i][1])**0.5, 'C%d:'%i)
             ax[1].plot(k, (pks[i][0]/pks[i][1])**0.5, 'C%d:'%i)
@@ -327,7 +363,7 @@ for epoch in range(EPOCHS):
 
         break
 
-    rim.save_weights(ofolder + '/%d.png'%epoch)
+    rim.save_weights(ofolder + '/%d'%epoch)
     
     
 
