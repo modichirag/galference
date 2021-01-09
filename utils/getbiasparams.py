@@ -41,7 +41,7 @@ def shear(base):
     return s2  
 
 
-def getbias(bs, nc, hmesh, basemesh, pos, doed=False, fpos=None, kmax=0.3):
+def getbias(bs, nc, hmesh, basemesh, pos, doed=False, fpos=None, kmax=0.3, fitshear=False):
 
     
     print('Will fit for bias now')
@@ -56,7 +56,6 @@ def getbias(bs, nc, hmesh, basemesh, pos, doed=False, fpos=None, kmax=0.3):
         s2 -= 1.*d0**2
         s2 -= s2.mean()
 
-    print(hmesh.shape)
     k, ph = tools.power(hmesh, boxsize = bs)    
     ik = numpy.where(k > kmax)[0][0]
 
@@ -89,6 +88,10 @@ def getbias(bs, nc, hmesh, basemesh, pos, doed=False, fpos=None, kmax=0.3):
 
     def ftomin(bb, ii=ik, retp = False):
         b1, b2, bs = bb
+        #
+        if fitshear: pass
+        else: bs = 0.
+        #
         pred = b1**2 *ped0 + b2**2*ped2 + 2*b1*b2*pxed0d2 
         pred += bs**2 *pes2 + 2*b1*bs*pxed0s2 + 2*b2*bs*pxed2s2
         if doed: pred += ped + 2*b1*pxedd0 + 2*b2*pxedd2 + 2*bs*pxeds2 
