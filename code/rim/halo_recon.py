@@ -17,8 +17,8 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_split,  build_rim_parallel, myAdam
-from recon_models import Recon_Bias
+from rim_utils import build_rim_parallel, myAdam
+from recon_models import Recon_DM, Recon_Bias
 
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint, cic_readout
@@ -62,7 +62,7 @@ parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
 parser.add_argument('--posdata', type=str2bool, default=True, help='Position data')
-parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or split')
+parser.add_argument('--RRs', type=int, default=2, help='Position data')
 
 
 
@@ -78,7 +78,9 @@ lr = args.lr
 a0, af, nsteps = 0.1, 1.0,  args.nsteps
 stages = np.linspace(a0, af, nsteps, endpoint=True)
 #anneal = True
-#RRs = [2, 1, 0.5, 0]
+if args.RRs == 2: RRs = [1,  0]
+elif args.RRs == 3: RRs = [2., 1.,  0]
+print(RRs)
 
 #
 klin = np.loadtxt('../../data/Planck15_a1p00.txt').T[0]
@@ -110,15 +112,8 @@ params['nc'] = nc
 adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 #fid_recon = Recon_DM(nc, bs, a0=a0, af=af, nsteps=nsteps, nbody=args.nbody, lpt_order=args.lpt_order, anneal=True)
-    
-if args.parallel: suffpath = '_halo_parallel' + args.suffix
-else: suffpath = '_halo_split' + args.suffix
-if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
-try: os.makedirs(ofolder)
-except Exception as e: print(e)
 
-
+ofolder = './figs/'
 
 def get_data(nsims=args.nsims, posdata=True):
 
@@ -135,7 +130,7 @@ def get_data(nsims=args.nsims, posdata=True):
 
 traindata, testdata = get_data()
 print(traindata.shape, testdata.shape)
-
+ 
 
 
 @tf.function
@@ -183,7 +178,7 @@ def recon_model(linear, data, bias, errormesh):
 
     lineark = r2c3d(linear, norm=nc**3)
     priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
+    prior = tf.reduce_sum(tf.multiply(priormesh, 1/priorwt))
 
     loss = chisq + prior
 
@@ -264,11 +259,12 @@ def check_2pt(xx, yy, rim, grad_fn, grad_params, compares, nrim=10, fname=None):
 
 
 
-def setupbias(nsims = 10, cutoff=1.5):
+def setupbias(nsims = 2, cutoff=1.5):
 
     b1, b2, perr = [], [], []
     for i in range(nsims):
         idx = np.random.randint(0, traindata.shape[0], 1)
+        idx = idx*0 + 1
         xx = traindata[idx, 0].astype(np.float32)
         yy = traindata[idx, 1].astype(np.float32)
         _, fpos = pmpos(tf.constant(xx))
@@ -291,18 +287,6 @@ def setupbias(nsims = 10, cutoff=1.5):
     ipkerror = lambda x: 10**np.interp(np.log10(x), np.log10(kerror), np.log10(perr))
     errormesh = tf.constant(ipkerror(kmesh), dtype=tf.float32)
     return b1, b2, errormesh
-    #ipkerror = iuspline(kerror, perr)
-##    kk = np.logspace(np.log10(kerror.min()), np.log10(kmesh.max()))
-##    print("Min max error : ", errormesh.min(), errormesh.max())
-##
-##    plt.plot(kk, ipkerror(kk), 'o-')
-##    plt.plot(kerror, perror)
-##    plt.plot(kerror, perr, 'k')
-##    plt.axvline(nc*np.pi/bs)
-##    plt.grid(which='both')
-##    plt.loglog()
-##    plt.savefig('test.png')
-##
 
 
 def main():
@@ -310,34 +294,38 @@ def main():
     Model function for the CosmicRIM.
     """
 
-    if args.parallel: rim = build_rim_parallel(params)
-    else: rim = build_rim_split(params)
-
+    rim = build_rim_parallel(params)
+    #grad_fn = recon_dm_grad
     #
     b1, b2, errormesh = setupbias()
     bias = tf.constant([b1, b2], dtype=tf.float32)
     grad_fn = recon_grad
     grad_params = [bias, errormesh]
-    fid_recon = Recon_Bias(nc, bs, bias, errormesh, a0=a0, af=af, nsteps=args.nsteps, nbody=args.nbody, lpt_order=2, anneal=True)
 
     idx = np.random.randint(0, testdata.shape[0], 1)
+    idx = idx*0  + 1
     xx, yy = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
-##    x_init = np.random.normal(size=x_test.size).reshape(x_test.shape).astype(np.float32)
-##    print("Loss at truth : ", recon_model(tf.constant(x_test), tf.constant(y_test),  *[bias, errormesh]))
-##    print("Loss at init : ", recon_model(tf.constant(x_init), tf.constant(y_test),  *[bias, errormesh]))
-##
-##    pred_adam = adam(tf.constant(x_init), tf.constant(y_test), grad_fn, [bias, errormesh])
-##    print("Loss at adam : ", recon_model(tf.constant(pred_adam), tf.constant(y_test),  *[bias, errormesh]))
-##    pred_adam = [pred_adam[0].numpy(), biasfield(pred_adam, bias)[0].numpy()]
-##
-##    pred_adam10 = adam10(tf.constant(x_init), tf.constant(y_test), grad_fn, [bias, errormesh])
-##    print("Loss at adam 10x : ", recon_model(tf.constant(pred_adam10), tf.constant(y_test),  *[bias, errormesh]))
-##    pred_adam10 = [pred_adam10[0].numpy(), biasfield(pred_adam10, bias)[0].numpy()]
-##    minic, minfin = fid_recon.reconstruct(tf.constant(y_test), RRs=[1.0, 0.0], niter=args.rim_iter*10, lr=0.1)
-##    compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
-##    check_2pt(x_test, y_test, rim, grad_fn, grad_params, compares, fname= 'halosrecon.png')
-##    print('Test set generated')
-##    
+    x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
+    fid_recon = Recon_Bias(nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=args.nsteps, nbody=args.nbody, lpt_order=2, anneal=True)
+    #minic, minfin = fid_recon.reconstruct(tf.constant(yy), RRs=[1.0, 0.0], niter=args.rim_iter*10, lr=0.1)
+    
+    print("Loss at truth : ", recon_model(tf.constant(xx), tf.constant(yy),  *[bias, errormesh]))
+    print("Loss at init : ", recon_model(tf.constant(x_init), tf.constant(yy),  *[bias, errormesh]))
+
+    pred_adam = adam(tf.constant(x_init), tf.constant(yy), grad_fn, [bias, errormesh])
+    print("Loss at adam : ", recon_model(tf.constant(pred_adam), tf.constant(yy),  *[bias, errormesh]))
+    pred_adam = [pred_adam[0].numpy(), biasfield(pred_adam, bias)[0].numpy()]
+
+    pred_adam10 = adam10(tf.constant(x_init), tf.constant(yy), grad_fn, [bias, errormesh])
+    print("Loss at adam 10x : ", recon_model(tf.constant(pred_adam10), tf.constant(yy),  *[bias, errormesh]))
+    pred_adam10 = [pred_adam10[0].numpy(), biasfield(pred_adam10, bias)[0].numpy()]
+    minic, minfin = fid_recon.reconstruct(tf.constant(yy), RRs=RRs, niter=args.rim_iter*10, lr=0.1)
+    compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
+    check_im(xx[0], x_init[0], minic[0], fname= 'halosreconim.png')
+    check_2pt(xx, yy, rim, grad_fn, grad_params, compares, fname= 'halosrecon.png')
+    print('Test set generated')
+
+    sys.exit()
     x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
     x_pred = rim(x_init, yy, grad_fn, grad_params)
 

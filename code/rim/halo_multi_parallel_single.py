@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from rim_utils import build_rim_parallel_single, myAdam
+from rim_utils import build_rim_parallel_single, build_rim_split_single, myAdam
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
 from flowpm.utils import r2c3d, c2r3d
@@ -59,7 +59,7 @@ parser.add_argument('--lpt_order', type=int, default=2, help='Order of LPT Initi
 parser.add_argument('--input_size', type=int, default=8, help='Input layer channel size')
 parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
 parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
-parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
+parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
 parser.add_argument('--posdata', type=str2bool, default=True, help='Position data')
@@ -137,7 +137,7 @@ def get_ps(iterand, truth):
 def get_data(nsims=args.nsims, posdata=True):
 
     path = '//mnt/ceph/users/cmodi/cosmo4d/z00/'
-    path = '/project/projectdirs/m3058/chmodi/rim-data/halos/z00/'
+    #path = '/project/projectdirs/m3058/chmodi/rim-data/halos/z00/'
     path = path + '/L%04d_N%04d_D%04d//'%(bs, nc, numd*1e4)
     #if args.nbody: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_T%02d/'%(bs, nc, nsteps)
     #else: dpath = '/project/projectdirs/m3058/chmodi/rim-data/L%04d_N%03d_LPT%d/'%(bs, nc, args.lpt_order)
@@ -264,7 +264,7 @@ checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 
 with strategy.scope():
     if args.parallel: rim = build_rim_parallel_single(params)
-    else: rim = build_rim_split(params)
+    else: rim = build_rim_split_single(params)
     grad_fn = recon_grad
     b1, b2, errormesh = setupbias()
     bias = tf.constant([b1, b2], dtype=tf.float32)
@@ -353,7 +353,7 @@ adam = myAdam(params['rim_iter'])
 adam10 = myAdam(10*params['rim_iter'])
 
 if args.parallel: suffpath = '_halo_parallel_single' + args.suffix
-else: suffpath = '_halo_split' + args.suffix
+else: suffpath = '_halo_split_single' + args.suffix
 if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
 else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
 try: os.makedirs(ofolder)
