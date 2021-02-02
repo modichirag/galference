@@ -15,12 +15,13 @@ import tensorflow_probability as tfp
 import numpy as np
 import os, sys, argparse, time
 from scipy.interpolate import InterpolatedUnivariateSpline as iuspline
+from scipy.interpolate import interp1d
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 from rim_utils import  build_rim_parallel_single, myAdam
-from modelhalo import HaloData, check_2pt, check_im, get_data
+from modelhalo import HaloData, check_2pt, check_im, get_data, get_diff_spectra
 
 import flowpm
 from flowpm import linear_field, lpt_init, nbody, cic_paint
@@ -48,12 +49,14 @@ def str2bool(v):
     
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--nc', type=int, default=32, help='Grid size')
-parser.add_argument('--ncf', type=int, default=4, help='Grid size')
+parser.add_argument('--ncf', type=int, default=128, help='Grid size')
 parser.add_argument('--bs', type=float, default=200, help='Box Size')
 parser.add_argument('--numd', type=float, default=0.001, help='number density')
 parser.add_argument('--nsteps', type=int, default=3, help='')
 parser.add_argument('--niter', type=int, default=200, help='Number of iterations/Max iterations')
-parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate')
+parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+parser.add_argument('--decay', type=float, default=0.9, help='Decay rate')
+parser.add_argument('--decayiter', type=int, default=100, help='Decay rate')
 parser.add_argument('--optimizer', type=str, default='adam', help='Which optimizer to use')
 parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
 parser.add_argument('--nsims', type=int, default=100, help='Number of simulations')
@@ -67,6 +70,12 @@ parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pa
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
 parser.add_argument('--posdata', type=str2bool, default=True, help='Position data')
 parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel')
+parser.add_argument('--stdinit', type=str2bool, default=False, help='Parallel')
+parser.add_argument('--Rstd', type=int, default=128, help='Parallel')
+parser.add_argument('--priorinit', type=str2bool, default=False, help='Start with priorinit')
+parser.add_argument('--nsimsbias', type=int, default=10, help='Number of simulations to get bias')
+parser.add_argument('--diffps', type=str2bool, default=False, help='Diff PS')
+parser.add_argument('--prior', type=str2bool, default=False, help='Use prior for RIM')
 
 
 
@@ -75,7 +84,7 @@ args = parser.parse_args()
 
 nc, bs = args.nc, args.bs
 numd = args.numd
-ncf = args.ncf*args.nc
+ncf = args.nc
 niter = args.niter
 lr = args.lr
 a0, af, nsteps = 0.1, 1.0,  args.nsteps
@@ -83,13 +92,13 @@ stages = np.linspace(a0, af, nsteps, endpoint=True)
 args.stages = stages
 args.a0, args.af = a0, af
 args.world_size = world_size
-
+RRs = [1.0, 0.5, 0.0]
 #
 klin = np.loadtxt('../../data/Planck15_a1p00.txt').T[0]
 plin = np.loadtxt('../../data//Planck15_a1p00.txt').T[1]
 ipklin = iuspline(klin, plin)
 # Compute necessary Fourier kernels                                                                                          
-kvec = tools.fftk((nc, nc, nc), boxsize=nc, symmetric=False)
+kvec = tools.fftk((nc, nc, nc), boxsize=bs, symmetric=False)
 kmesh = (sum(k**2 for k in kvec)**0.5).astype(np.float32)
 priorwt = ipklin(kmesh)
 
@@ -135,20 +144,24 @@ GLOBAL_BATCH_SIZE = params['batch_size']
 
 traindata, testdata = get_data(args)
 print(traindata.shape, testdata.shape)
-train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(len(traindata)).batch(GLOBAL_BATCH_SIZE) 
-test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
+if args.stdinit:
+    ipkdiff, b1eul = get_diff_spectra(args, ipklin, nsims=args.nsimsbias, nsteps=3)
+    print("B1 eulerian : ", b1eul)
+
+train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1:])).shuffle(len(traindata)).batch(GLOBAL_BATCH_SIZE) 
+test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1:])).batch(strategy.num_replicas_in_sync) 
 
 train_dist_dataset = strategy.experimental_distribute_dataset(train_dataset)
 test_dist_dataset = strategy.experimental_distribute_dataset(test_dataset)
 
 
-if args.parallel: suffpath = '_halo_single_w%d'%world_size + args.suffix
+if args.parallel: suffpath = '_halo_cutoff_w%d'%world_size + args.suffix
 else: suffpath = '_halo_split' + args.suffix
-if args.nbody: ofolder = './models/L%04d_N%03d_T%02d%s/'%(bs, nc, nsteps, suffpath)
-else: ofolder = './models/L%04d_N%03d_LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
+if args.nbody: ofolder = './models/L%04d_N%03d/T%02d%s/'%(bs, nc, nsteps, suffpath)
+else: ofolder = './models/L%04d_N%03d/LPT%d%s/'%(bs, nc, args.lpt_order, suffpath)
+print('Output in \n%s\n'%ofolder)
 try: os.makedirs(ofolder)
 except Exception as e: print(e)
-
 
 
 
@@ -157,34 +170,119 @@ except Exception as e: print(e)
 with strategy.scope():
     rim = build_rim_parallel_single(params)
     grad_fn = datamodel.recon_grad
-    bias, errormesh = datamodel.setupbias(traindata, nsims=10)
+    bias, errormesh = datamodel.setupbias(traindata, nsims=args.nsimsbias)
+    errormesh = tf.constant(np.expand_dims(errormesh, 0), dtype=tf.float32)
     print(bias)
+    print(errormesh.shape)
     grad_params = [bias, errormesh]
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr)
+    step = tf.Variable(0, trainable=False)
+    boundaries = [100, 1000]
+    values = [args.lr, args.lr/2., args.lr/5.]
+    learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
+        boundaries, values)
+    #learning_rate = learning_rate_fn(step)
+    learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+        args.lr,
+        decay_steps=args.decayiter,
+        decay_rate=args.decay,
+        staircase=False)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    #optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr)
     checkpoint = tf.train.Checkpoint(model=rim)
     #
 
+############################################
+
+x_test, y_test = testdata[0:1, 0], testdata[0:1, 1:]
+x_test = tf.constant(x_test, dtype=tf.float32)
+#fpos = datamodel.pmpos(x_test)[1].numpy()[0]*bs/nc
+#bparams, bmodel = getbias(bs, nc, y_test[0, 0], x_test.numpy()[0], fpos)
+#bias_test = tf.constant([bparams[0], bparams[1]], dtype=tf.float32)
+#print('Bias test : ', bias_test)
+#bmodeltf = datamodel.biasfield(x_test, bias_test).numpy()
+#errormesh_test = y_test[:, 0] - bmodeltf
+#kerror, perror = tools.power(errormesh_test[0], boxsize=bs)
+#kerror, perror = kerror[1:], perror[1:]
+#ipkerror = interp1d(kerror, perror, bounds_error=False, fill_value=(perror[0], perror.max()))
+#errormesh_test = tf.expand_dims(tf.constant(ipkerror(kmesh), dtype=tf.float32), 0)
+#
+if args.stdinit:
+    x_init = tf.constant(y_test[:, 1] / b1eul , dtype=tf.float32)
+    if args.diffps : x_init = x_init + linear_field(nc, bs, ipkdiff, batch_size=y_test.shape[0])
+elif args.priorinit:
+    x_init =  linear_field(nc, bs, ipklin, batch_size=y_test.shape[0])
+else: 
+    x_init = tf.random.normal(x_test.shape)
+y_test = tf.constant(y_test[:, 0])
+#pred_adam = adam(x_init, y_test, grad_fn, grad_params)
+#pred_adam10 = adam10(x_init, y_test, grad_fn, grad_params)
+#fid_recon = Recon_Bias(nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=args.nsteps, nbody=args.nbody, lpt_order=2, anneal=True, prior=True)    
+#minic, minfin = fid_recon.reconstruct(tf.constant(y_test), RRs=RRs, niter=args.rim_iter*10, lr=0.1)
+minic, minfin = datamodel.reconstruct(tf.constant(y_test), bias, errormesh,
+                                      RRs=RRs, niter=args.rim_iter*20, lr=0.5, x_init=x_init, useprior=True)
+pred_adam, _ = datamodel.reconstruct(tf.constant(y_test), bias, errormesh,
+                                      RRs=[0.0], niter=args.rim_iter, lr=0.5, x_init=x_init, useprior=True)
+pred_adam10, _ = datamodel.reconstruct(tf.constant(y_test), bias, errormesh,
+                                      RRs=[0.0], niter=args.rim_iter*10, lr=0.5, x_init=x_init, useprior=True)
+
+check_2pt(datamodel,
+          #[[x_test, y_test], [x_init, minic]], 
+          #[[x_test, y_test], [pred_adam, pred_adam10, minic]], grad_params, ofolder + 'fid_recon')
+          [[x_test+1., y_test], [x_init+1., minic+1.]], 
+          [[x_test+1., y_test], [pred_adam+1., pred_adam10+1., minic+1.]], grad_params, ofolder + 'fid_recon')
+
+bmodeltf = datamodel.biasfield(x_test, bias)
+error = y_test - bmodeltf
+k, ph = tools.power(y_test.numpy()[0], boxsize=bs)
+k, pb = tools.power(bmodeltf.numpy()[0], boxsize=bs)
+kerror, perr = tools.power(error.numpy()[0]+1, boxsize=bs)
+kny = nc*np.pi/bs
+cutoff = 1.5
+perr[np.where(kerror > cutoff*kny)] = perr[np.where(kerror > cutoff*kny)[0][0]]
+k, px = tools.power(y_test.numpy()[0], f2=bmodeltf.numpy()[0], boxsize=bs)
+
+fig, ax = plt.subplots(1, 2, figsize=(9, 4))
+ax[0].plot(k, ph, label='halo')
+ax[0].plot(k, pb, '--', label='bias')
+ax[0].plot(k, perr, label='error')
+ax[0].loglog()
+ax[1].plot(k, px/(ph*pb)**0.5)
+ax[1].plot(k, (pb/ph)**0.5, '--', label='tf')
+ax[1].semilogx()
+ax[1].set_ylim(-0.2, 1.5)
+ax[0].set_ylim(10, 1e5)
+for axis in ax:
+    axis.legend()
+    axis.grid(which='both')
+plt.savefig(ofolder + 'evalbfit.png')
+plt.close()
 
 
 def train_step(inputs):
     x_true, y = inputs
-    x_init = tf.random.normal(x_true.shape)
-    print(x_init.shape)
     if len(rim.trainable_variables) == 0:
         #Hack since sometimes this si the first time RIM is called and so hasn't been inisitalized
         i = 0
-        a, b, c = x_init[i:i+1], y[i:i+1],  x_true[i:i+1]
+        b, c = y[i:i+1],  x_true[i:i+1]
+        if args.stdinit:
+            a = b[:, 1] / b1eul 
+            if args.diffps : a = a + linear_field(nc, bs, ipkdiff, batch_size=b.shape[0])
+        else: a = tf.random.normal(c.shape)
+        b = b[:, 0]
         try: a, b, c = tf.constant(a), tf.constant(b),  tf.constant(c)
         except: pass
         _ =  rim(a, b, grad_fn, c, grad_params)[1] / args.batch_size
     #
     gradients = [0.]*len(rim.trainable_variables)
-    #n = args.sims_in_loop
     for i in range(args.batch_size // world_size):
         with tf.GradientTape() as tape:
-            #a, b, c = x_init[n*i:n*i+n], y[n*i:n*i+n],  x_true[n*i:n*i+n]
-            a, b, c = x_init[i:i+1], y[i:i+1],  x_true[i:i+1]
+            b, c = y[i:i+1],  x_true[i:i+1]
+            if args.stdinit:
+                a = b[:, 1] / b1eul #+ linear_field(nc, bs, ipkdiff, batch_size=b.shape[0])
+                if args.diffps : a = a + linear_field(nc, bs, ipkdiff, batch_size=b.shape[0])
+            else: a = tf.random.normal(c.shape)
+            b = b[:, 0]
             try: a, b, c = tf.constant(a), tf.constant(b),  tf.constant(c)
             except: pass
             loss =  rim(a, b, grad_fn, c, grad_params)[1] / args.batch_size
@@ -198,7 +296,11 @@ def train_step(inputs):
 
 def test_step(inputs):
     x_true, y = inputs
-    x_init = tf.random.normal(x_true.shape)
+    if args.stdinit:
+        x_init = y[:, 1] / b1eul 
+        if args.diffps : x_init = x_init + linear_field(nc, bs, ipkdiff, batch_size=y.shape[0])
+    else: x_init = tf.random.normal(x_true.shape)
+    y = y[:, 0]
     x_pred = rim(x_init, y, grad_fn, x_true, grad_params)[0]
     return x_pred, x_init, x_true, y
 
@@ -253,11 +355,16 @@ for epoch in range(args.epochs):
         #print(a.values[0].shape, b.values[0].shape, c.values[0].shape, d.values[0].shape)
         try: pred, x_init, xx, yy = a.values[0], b.values[0], c.values[0], d.values[0]
         except: pred, x_init, xx, yy = a, b, c, d
-        pred_adam = adam(x_init, yy, grad_fn, grad_params)
-        pred_adam10 = adam10(x_init, yy, grad_fn, grad_params)
+        #pred_adam = adam(x_init, yy, grad_fn, grad_params)
+        #pred_adam10 = adam10(x_init, yy, grad_fn, grad_params)
         
         check_im(xx[0].numpy(), x_init[0].numpy(), pred[0].numpy(), ofolder + 'rim-im-%d.png'%epoch)
-        check_2pt(datamodel, xx, yy, x_init, pred, pred_adam, pred_adam10, grad_params, ofolder + 'rim-2pt-%d.png'%epoch)
+        check_2pt(datamodel,
+                  #[[xx, yy], [x_init, pred]], 
+                  #[[x_test, y_test], [pred_adam, pred_adam10, minic]], grad_params, ofolder + 'rim-2pt-%d.png'%epoch)
+                  [[xx+1., yy], [x_init+1., pred+1.]], 
+                  [[x_test+1., y_test], [pred_adam+1., pred_adam10+1., minic+1.]], grad_params, ofolder + 'rim-2pt-%d.png'%epoch)
+        #check_2pt(datamodel, xx, yy, x_init, pred, pred_adam, pred_adam10, grad_params, ofolder + 'rim-2pt-%d.png'%epoch)
 
         break
 
