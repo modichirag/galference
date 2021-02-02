@@ -249,7 +249,7 @@ class Recon_Poisson():
 ################
 class Recon_Bias():
     
-    def __init__(self, nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=5, nbody=True, lpt_order=2, anneal=True):
+    def __init__(self, nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=5, nbody=True, lpt_order=2, anneal=True, prior=True):
         self.nc = nc
         self.bs = bs
         self.bias = bias
@@ -267,7 +267,7 @@ class Recon_Bias():
         self.kmesh = (sum(k**2 for k in self.kvec)**0.5).astype(np.float32)
         self.priorwt = self.ipklin(self.kmesh)
         self.R0 = tf.constant(0.)
-
+        self.prior= prior
 
     @tf.function
     def forward(self, linear):
@@ -313,7 +313,8 @@ class Recon_Bias():
         #Prior
         lineark = r2c3d(linear, norm=nc**3)
         priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-        prior = tf.reduce_sum(tf.multiply(priormesh, 1/self.priorwt))
+        if self.prior: prior = tf.reduce_sum(tf.multiply(priormesh, 1/self.priorwt))
+        else: prior = tf.reduce_mean(tf.multiply(priormesh, 1/self.priorwt))
         #prior = tf.multiply(prior, 1/nc**3, name='prior')
         #
         loss = logprob + prior

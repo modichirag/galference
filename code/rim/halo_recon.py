@@ -57,11 +57,12 @@ parser.add_argument('--nbody', type=str2bool, default=True, help='Number of simu
 parser.add_argument('--lpt_order', type=int, default=2, help='Order of LPT Initial conditions')
 parser.add_argument('--input_size', type=int, default=8, help='Input layer channel size')
 parser.add_argument('--cell_size', type=int, default=8, help='Cell channel size')
-parser.add_argument('--rim_iter', type=int, default=10, help='Optimization iteration')
+parser.add_argument('--rim_iter', type=int, default=20, help='Optimization iteration')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
 parser.add_argument('--posdata', type=str2bool, default=True, help='Position data')
+parser.add_argument('--prior', type=str2bool, default=True, help='Use prior as sum')
 parser.add_argument('--RRs', type=int, default=2, help='Position data')
 
 
@@ -178,7 +179,8 @@ def recon_model(linear, data, bias, errormesh):
 
     lineark = r2c3d(linear, norm=nc**3)
     priormesh = tf.square(tf.cast(tf.abs(lineark), tf.float32))
-    prior = tf.reduce_sum(tf.multiply(priormesh, 1/priorwt))
+    if args.prior: prior = tf.reduce_sum(tf.multiply(priormesh, 1/priorwt))
+    else: prior = tf.reduce_mean(tf.multiply(priormesh, 1/priorwt))
 
     loss = chisq + prior
 
@@ -294,6 +296,15 @@ def main():
     Model function for the CosmicRIM.
     """
 
+    if args.posdata: suff = 'pos'
+    else: suff = 'mass'
+    if args.nbody: suff = suff + '-T%02d'%nsteps
+    else: suff = suff + '-LPT2'
+    if args.prior : pass
+    else: suff = suff + '-noprior'
+    if len(RRs) !=2 : suff = suff + "-RR%d"%(len(RRs))
+    print(suff)
+
     rim = build_rim_parallel(params)
     #grad_fn = recon_dm_grad
     #
@@ -306,7 +317,7 @@ def main():
     idx = idx*0  + 1
     xx, yy = testdata[idx, 0].astype(np.float32), testdata[idx, 1].astype(np.float32), 
     x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
-    fid_recon = Recon_Bias(nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=args.nsteps, nbody=args.nbody, lpt_order=2, anneal=True)
+    fid_recon = Recon_Bias(nc, bs, bias, errormesh, a0=0.1, af=1.0, nsteps=args.nsteps, nbody=args.nbody, lpt_order=2, anneal=True, prior=args.prior)
     #minic, minfin = fid_recon.reconstruct(tf.constant(yy), RRs=[1.0, 0.0], niter=args.rim_iter*10, lr=0.1)
     
     print("Loss at truth : ", recon_model(tf.constant(xx), tf.constant(yy),  *[bias, errormesh]))
@@ -321,11 +332,14 @@ def main():
     pred_adam10 = [pred_adam10[0].numpy(), biasfield(pred_adam10, bias)[0].numpy()]
     minic, minfin = fid_recon.reconstruct(tf.constant(yy), RRs=RRs, niter=args.rim_iter*10, lr=0.1)
     compares =  [pred_adam, pred_adam10, [minic[0], minfin[0]]]
-    check_im(xx[0], x_init[0], minic[0], fname= 'halosreconim.png')
-    check_2pt(xx, yy, rim, grad_fn, grad_params, compares, fname= 'halosrecon.png')
+
+    check_im(xx[0], x_init[0], minic[0], fname= './figs/L%04d-N%03d-%s-im.png'%(bs, nc, suff))
+    check_2pt(xx, yy, rim, grad_fn, grad_params, compares, fname= './figs/L%04d-N%03d-%s-2pt.png'%(bs, nc, suff))
     print('Test set generated')
 
     sys.exit()
+
+
     x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
     x_pred = rim(x_init, yy, grad_fn, grad_params)
 

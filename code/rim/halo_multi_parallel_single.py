@@ -250,6 +250,7 @@ print(traindata.shape, testdata.shape)
 BUFFER_SIZE = len(traindata)
 BATCH_SIZE_PER_REPLICA = params['batch_size']
 GLOBAL_BATCH_SIZE = BATCH_SIZE_PER_REPLICA * strategy.num_replicas_in_sync
+print("GLOBAL_BATCH_SIZE : ", GLOBAL_BATCH_SIZE)
 EPOCHS = params['epoch']
 train_dataset = tf.data.Dataset.from_tensor_slices((traindata[:, 0], traindata[:, 1])).shuffle(BUFFER_SIZE).batch(GLOBAL_BATCH_SIZE) 
 test_dataset = tf.data.Dataset.from_tensor_slices((testdata[:, 0], testdata[:, 1])).batch(strategy.num_replicas_in_sync) 
@@ -307,14 +308,14 @@ def train_step(inputs):
         with tf.GradientTape() as tape:
             a, b, c = x_init[n*i:n*i+n], y[n*i:n*i+n],  x_true[n*i:n*i+n]
             if a.shape[0] > 0:
-                loss =  rim(a, b, grad_fn, c, grad_params)[1]
+                loss =  rim(a, b, grad_fn, c, grad_params)[1] / GLOBAL_BATCH_SIZE
             else: 
                 getgrads = False
                 continue
             #loss =  rim(tf.constant(a), tf.constant(b), grad_fn, tf.constant(c))[1]
         grads = tape.gradient(loss, rim.trainable_variables)
         if getgrads : 
-            for j in range(len(grads)): gradients[j] = gradients[j] + grads[j] / (args.batch_size//n)
+            for j in range(len(grads)): gradients[j] = gradients[j] + grads[j] #/ (args.batch_size//n)
     #print('looped')
     if getgrads : optimizer.apply_gradients(zip(gradients, rim.trainable_variables))
     #print('optimized')

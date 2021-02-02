@@ -7,8 +7,19 @@ import tensorflow as tf
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
 print("\nphysical_devices\n", physical_devices)
 assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
-for device in physical_devices:
-    config = tf.config.experimental.set_memory_growth(device, True)
+#for device in physical_devices:
+#    config = tf.config.experimental.set_memory_growth(device, True)
+gpus = physical_devices
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
 
 import tensorflow_probability as tfp
 import numpy as np
@@ -294,8 +305,10 @@ def train_step(dummy):
     gradients = [0.]*len(rim.trainable_variables)
     getgrads = True
     #print(len(gradients))
-    for i in range(args.batch_size//n):
-        idx = np.random.randint(0, traindata.shape[0], n)
+    nloop = 4
+    #for i in range(args.batch_size//n):
+    for i in range(nloop):
+        idx = np.random.randint(0, traindata.shape[0], 1)
         print("%d traindata samples : "%i, idx)
         xx, yy = traindata[idx, 0].astype(np.float32), traindata[idx, 1].astype(np.float32), 
         x_init = np.random.normal(size=xx.size).reshape(xx.shape).astype(np.float32)
@@ -308,10 +321,11 @@ def train_step(dummy):
             continue
         if getgrads : 
             grads = tape.gradient(loss, rim.trainable_variables)
-            for j in range(len(grads)): gradients[j] = gradients[j] + grads[j] / (args.batch_size//n)
-    #print('looped')
-    if getgrads : optimizer.apply_gradients(zip(gradients, rim.trainable_variables))
-    #print('optimized')
+            for j in range(len(grads)): gradients[j] = gradients[j] + grads[j] / nloop # (args.batch_size//n)
+    print('looped')
+    if getgrads : 
+        optimizer.apply_gradients(zip(gradients, rim.trainable_variables))
+        print('optimized')
     return loss
 
 
@@ -328,6 +342,7 @@ def test_step(inputs):
 @tf.function
 def distributed_train_step(dataset_inputs):
   per_replica_losses = strategy.run(train_step, args=(dataset_inputs,))
+  print("\nper replica losses : ", per_replica_losses)
   return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
 

@@ -553,7 +553,7 @@ def build_rim_split(params):
 class RIM3D_split_single(tf.keras.Model):
 
     def __init__(self, cell1, cell2, input_layer, input_layer_sub, output_layer_sub, output_layer, strides, niter):
-        super(RIM3D_split, self).__init__()
+        super(RIM3D_split_single, self).__init__()
         self.cell1 = cell1
         self.cell2 = cell2
         self.output_layer = output_layer
@@ -649,7 +649,7 @@ def build_rim_split_single(params):
     output_layer = Conv3D(1, kernel_size=params['output_kernel_size'], trainable=True, padding='SAME', 
                           input_shape=(None, nc, nc, nc, params['cell_size']*2), activation=params['output_activation'])
    
-    rim = RIM3D_split(cell1, cell2, input_layer, input_layer_sub, output_layer_sub, output_layer, strides=params['strides'],
+    rim = RIM3D_split_single(cell1, cell2, input_layer, input_layer_sub, output_layer_sub, output_layer, strides=params['strides'],
                        niter=params['rim_iter'])
 
     return rim

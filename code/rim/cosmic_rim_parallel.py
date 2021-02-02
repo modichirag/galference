@@ -3,6 +3,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+print('\n\n#############STARTS WITH LINEAR FIELD SAMPLE FOR INITIAL POSITION###################\n\n')
+
 import tensorflow as tf
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
 print(physical_devices)
@@ -58,7 +60,6 @@ parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--suffix', type=str, default='', help='Suffix for folder pathname')
 parser.add_argument('--batch_in_epoch', type=int, default=20, help='Number of batches in epochs')
 parser.add_argument('--parallel', type=str2bool, default=True, help='Parallel or Split')
-
 
 
 args = parser.parse_args()
